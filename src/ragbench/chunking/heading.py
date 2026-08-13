@@ -1,4 +1,4 @@
-"""Section-preferred chunking with token splitting for oversized sections."""
+"""Section-preferred chunking with one token stream per section."""
 
 from __future__ import annotations
 
@@ -35,54 +35,42 @@ class HeadingAwareChunker:
             else:
                 groups[-1].append(block)
         output: list[ChunkRecord] = []
+        token_base = 0
         for group in groups:
-            candidates: list[ChunkRecord] = []
-            pending: list[DocumentBlock] = []
-
-            for block in group:
-                if len(encoding().encode(block.content)) > self.target_size:
-                    if pending:
-                        candidates.extend(
-                            FixedChunker(self.target_size, self.overlap).split(pending)
-                        )
-                        pending.clear()
-                    candidates.extend(FixedChunker(self.target_size, self.overlap).split([block]))
-                    continue
-                proposed = [*pending, block]
-                proposed_text = "\n\n".join(item.content for item in proposed)
-                if pending and len(encoding().encode(proposed_text)) > self.target_size:
-                    candidates.extend(FixedChunker(self.target_size, self.overlap).split(pending))
-                    pending.clear()
-                pending.append(block)
-            if pending:
-                candidates.extend(FixedChunker(self.target_size, self.overlap).split(pending))
-            for chunk in candidates:
+            section_text = "\n\n".join(block.content for block in group)
+            candidates = FixedChunker(self.target_size, self.overlap).split(group)
+            for candidate in candidates:
                 ordinal = len(output)
+                token_start = token_base + candidate.token_start
+                token_end = token_base + candidate.token_end
                 identity = canonical_json_hash(
                     {
-                        "document": chunk.document_id,
+                        "document": candidate.document_id,
                         "ordinal": ordinal,
-                        "content": chunk.content,
-                        "blocks": chunk.source_block_ids,
+                        "token_start": token_start,
+                        "token_end": token_end,
+                        "content": candidate.content,
+                        "blocks": candidate.source_block_ids,
                     }
                 )[:24]
-                chunk_id = f"{chunk.parse_snapshot_id}:{self.strategy_hash}:{identity}"
+                chunk_id = f"{candidate.parse_snapshot_id}:{self.strategy_hash}:{identity}"
                 output.append(
                     ChunkRecord(
                         chunk_id,
-                        chunk.document_id,
-                        chunk.parse_snapshot_id,
+                        candidate.document_id,
+                        candidate.parse_snapshot_id,
                         self.strategy,
                         self.strategy_hash,
                         ordinal,
-                        chunk.page_start,
-                        chunk.page_end,
+                        candidate.page_start,
+                        candidate.page_end,
                         group[0].section_path,
-                        chunk.content,
-                        chunk.token_count,
-                        chunk.token_start,
-                        chunk.token_end,
-                        chunk.source_block_ids,
+                        candidate.content,
+                        candidate.token_count,
+                        token_start,
+                        token_end,
+                        candidate.source_block_ids,
                     )
                 )
+            token_base += len(encoding().encode(section_text))
         return output

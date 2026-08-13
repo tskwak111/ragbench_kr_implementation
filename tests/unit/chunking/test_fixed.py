@@ -1,8 +1,8 @@
 import pytest
-import tiktoken
 
 from ragbench.chunking.fixed import FixedChunker
 from ragbench.chunking.models import DocumentBlock
+from ragbench.chunking.tokenizer import encoding, safe_token_windows
 
 
 def _block(content, *, page=1, kind="paragraph", section=("절",)):
@@ -33,8 +33,8 @@ def test_fixed_chunker_is_token_aware_deterministic_and_preserves_korean():
     assert all(chunk.chunk_id.startswith("parse-snapshot:") for chunk in first)
     assert all(chunk.token_count <= 30 for chunk in first)
     assert all("�" not in chunk.content for chunk in first)
-    encoding = tiktoken.get_encoding("cl100k_base")
-    source_tokens = encoding.encode(text)
+    tokenizer = encoding()
+    source_tokens = tokenizer.encode(text)
     spans = [(chunk.token_start, chunk.token_end) for chunk in first]
     assert spans[0][0] == 0 and spans[-1][1] == len(source_tokens)
     assert all(
@@ -78,3 +78,44 @@ def test_fixed_chunker_rejects_non_progressing_configuration(size, overlap):
 
 def test_content_shorter_than_overlap_produces_one_chunk():
     assert len(FixedChunker(20, 10).split([_block("짧은 문서")])) == 1
+
+
+@pytest.mark.parametrize(
+    "text,size,overlap",
+    [
+        ("대한민국🙂ABC 한글 혼합 문자열", 3, 1),
+        ("가나다라마바사아자차카타파하", 2, 0),
+        ("a🙂나🙂b", 1, 0),
+    ],
+)
+def test_safe_windows_reconstruct_exact_utf8_and_report_real_token_ranges(text, size, overlap):
+    tokenizer = encoding()
+    tokens = tokenizer.encode(text)
+    windows = safe_token_windows(text, size, overlap)
+    rebuilt = bytearray(windows[0].content.encode())
+    previous = windows[0]
+    for window in windows[1:]:
+        actual_overlap = previous.token_end - window.token_start
+        overlap_bytes = b"".join(
+            tokenizer.decode_single_token_bytes(token)
+            for token in tokens[window.token_start : window.token_start + actual_overlap]
+        )
+        rebuilt.extend(window.content.encode()[len(overlap_bytes) :])
+        previous = window
+    assert bytes(rebuilt) == text.encode()
+    assert all(
+        b"".join(
+            tokenizer.decode_single_token_bytes(token)
+            for token in tokens[window.token_start : window.token_end]
+        )
+        == window.content.encode()
+        for window in windows
+    )
+    assert all("�" not in window.content for window in windows)
+    if overlap:
+        assert all(
+            left.token_end - right.token_start >= overlap
+            and left.token_end - right.token_start <= overlap + 3
+            for left, right in zip(windows, windows[1:], strict=False)
+        )
+    assert all((window.token_end - window.token_start) <= size + 3 for window in windows)

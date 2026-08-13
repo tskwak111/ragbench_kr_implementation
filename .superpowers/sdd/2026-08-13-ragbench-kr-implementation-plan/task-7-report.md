@@ -40,3 +40,27 @@ stable model and private-permission JSONL artifacts provide the Task 7 handoff b
 ## Verification
 
 The final fresh Ruff, strict mypy, and full offline pytest results are recorded in the task handoff.
+
+## Fix round 1 — real checkpoint compatibility and lossless offline token windows
+
+- Removed the synthetic `parse_snapshot_id` input requirement. The builder now consumes actual
+  `dataclasses.asdict(ParseCheckpoint)` records and derives each mode's parse snapshot ID from the
+  corpus snapshot, mode, provider model/version, and sorted source/raw-response hashes. That ID is
+  propagated consistently into blocks, chunk records, IDs, and dataset metadata.
+- Replaced character-offset repair with exact token-byte prefix accounting. Windows start and end
+  only at boundaries that are both whole-token and valid UTF-8 boundaries. If a Unicode codepoint
+  spans multiple tokens, a window or its effective overlap expands only enough to include that
+  codepoint; stored token ranges and counts describe the actual included tokens.
+- Heading-aware splitting now serializes every section exactly once and chunks its single token
+  stream. Token offsets never reset between internal blocks, and per-chunk page/block provenance
+  comes from exact character intersections with the serialized section.
+- Vendored the official OpenAI `cl100k_base.tiktoken` vocabulary under the tiktoken MIT license.
+  Runtime loading reads only the packaged asset, verifies SHA-256
+  `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`, and performs no network
+  or registry lookup. A wheel build confirmed the vocabulary, provenance note, and license are
+  packaged.
+- Hardened immutable writes with `lstat`, `O_NOFOLLOW`, regular-file and effective-user ownership
+  checks, byte comparison, and descriptor-based permission repair to mode `0600`. Symlinks fail
+  closed. Added explicit source-element reconstruction coverage for normalization.
+
+No real corpus build or notebook inspection was performed in this fix round.

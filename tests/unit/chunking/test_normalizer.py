@@ -140,3 +140,18 @@ def test_structured_table_content_is_serialized_without_reordering_cells(tmp_pat
         pages=1,
     )
     assert normalize(parsed)[0].content == '[["항목", "값"], ["매출", 10]]'
+
+
+def test_every_source_element_is_reconstructable_from_normalized_blocks(tmp_path):
+    elements = [
+        {"page": 1, "category": "heading", "content": "# 제목\r\n"},
+        {"page": 1, "category": "paragraph", "content": "금액  10"},
+        {"page": 2, "category": "table", "content": [["A", 1], ["B", 2]]},
+    ]
+    blocks = normalize(_checkpoint(tmp_path, elements, pages=2))
+    assert [index for block in blocks for index in block.source_element_indexes] == [0, 1, 2]
+    assert [block.source_content for block in blocks] == [
+        "# 제목\r\n",
+        "금액  10",
+        '[["A", 1], ["B", 2]]',
+    ]

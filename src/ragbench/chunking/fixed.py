@@ -94,7 +94,7 @@ class FixedChunker:
                     max(pages),
                     section,
                     window.content,
-                    len(encoding().encode(window.content)),
+                    window.token_end - window.token_start,
                     window.token_start,
                     window.token_end,
                     tuple(item.block_id for item in sources),

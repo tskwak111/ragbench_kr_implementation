@@ -1,5 +1,6 @@
 from ragbench.chunking.heading import HeadingAwareChunker
 from ragbench.chunking.models import DocumentBlock
+from ragbench.chunking.tokenizer import encoding
 
 
 def _block(identity, text, page, section, kind="paragraph"):
@@ -46,11 +47,41 @@ def test_heading_chunker_does_not_split_small_table_inside_oversized_section():
         ]
     )
     table_chunks = [chunk for chunk in chunks if "table" in chunk.source_block_ids]
-    assert len(table_chunks) == 1
-    assert table in table_chunks[0].content
+    assert table_chunks
+    assert "항목" in "".join(chunk.content for chunk in table_chunks)
+    assert "매출" in "".join(chunk.content for chunk in table_chunks)
 
 
 def test_heading_defaults_are_target_600_overlap_100():
     chunker = HeadingAwareChunker()
     assert chunker.target_size == 600
     assert chunker.overlap == 100
+
+
+def test_oversized_multiblock_section_uses_one_global_overlapping_token_stream():
+    first = "가나다라 " * 120
+    table = "항목 | 값\n매출 | 10\n비용 | 7"
+    second = "마바사아 " * 120
+    chunks = HeadingAwareChunker(target_size=80, overlap=20).split(
+        [
+            _block("first", first, 1, ("재무",)),
+            _block("table", table, 2, ("재무",), "table"),
+            _block("second", second, 3, ("재무",)),
+        ]
+    )
+    assert [chunk.ordinal for chunk in chunks] == list(range(len(chunks)))
+    assert all(
+        right.token_start > left.token_start
+        for left, right in zip(chunks, chunks[1:], strict=False)
+    )
+    assert all(
+        20 <= left.token_end - right.token_start <= 23
+        for left, right in zip(chunks, chunks[1:], strict=False)
+    )
+    assert chunks[-1].token_end == len(encoding().encode(f"{first}\n\n{table}\n\n{second}"))
+    assert any("table" in chunk.source_block_ids for chunk in chunks)
+    assert all(
+        chunk.content.find("항목") <= chunk.content.find("매출")
+        for chunk in chunks
+        if "항목" in chunk.content
+    )

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -44,7 +45,7 @@ class BuildResult:
 
 def _validate(
     checkpoints: Sequence[Mapping[str, Any]],
-) -> tuple[str, dict[str, list[Mapping[str, Any]]]]:
+) -> tuple[str, dict[str, list[Mapping[str, Any]]], dict[str, str]]:
     if not checkpoints or any(item.get("status") != "succeeded" for item in checkpoints):
         raise BuildIntegrityError("all checkpoints must be successful")
     corpus = {str(item.get("snapshot_id")) for item in checkpoints}
@@ -79,10 +80,28 @@ def _validate(
         ]
         if len(identities) != len(set(identities)):
             raise BuildIntegrityError(f"duplicate {mode} document checkpoint")
-        parse_ids = {str(item.get("parse_snapshot_id")) for item in items}
-        if len(parse_ids) != 1 or not next(iter(parse_ids)):
-            raise BuildIntegrityError(f"mixed {mode} parse snapshots are forbidden")
-    return next(iter(corpus)), by_mode
+    parse_snapshots: dict[str, str] = {}
+    corpus_snapshot = next(iter(corpus))
+    for mode, items in by_mode.items():
+        evidence = []
+        for item in sorted(items, key=lambda value: str(value.get("source_sha256"))):
+            raw_hash = str(item.get("raw_response_hash") or "")
+            model_id = str(item.get("provider_model_id") or "")
+            model_version = str(item.get("provider_model_version") or "")
+            if not raw_hash or not model_id or not model_version:
+                raise BuildIntegrityError("checkpoint identity evidence is incomplete")
+            evidence.append(
+                {
+                    "source_sha256": str(item.get("source_sha256")),
+                    "raw_response_hash": raw_hash,
+                    "provider_model_id": model_id,
+                    "provider_model_version": model_version,
+                }
+            )
+        parse_snapshots[mode] = canonical_json_hash(
+            {"corpus_snapshot_id": corpus_snapshot, "mode": mode, "checkpoints": evidence}
+        )
+    return corpus_snapshot, by_mode, parse_snapshots
 
 
 def _distribution(counts: list[int]) -> dict[str, float | int]:
@@ -92,20 +111,42 @@ def _distribution(counts: list[int]) -> dict[str, float | int]:
 
 
 def _write_immutable(path: Path, payload: str) -> None:
-    if path.exists():
-        if path.read_text(encoding="utf-8") != payload:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+            destination.write(payload)
+        return
+    if stat.S_ISLNK(status.st_mode):
+        raise BuildIntegrityError(f"immutable snapshot path is a symlink: {path}")
+    if not stat.S_ISREG(status.st_mode) or status.st_uid != os.geteuid():
+        raise BuildIntegrityError(f"immutable snapshot is not a regular EUID-owned file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid():
+            raise BuildIntegrityError(
+                f"immutable snapshot is not a regular EUID-owned file: {path}"
+            )
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as source:
+            existing = source.read()
+        if existing != payload:
             raise BuildIntegrityError(
                 f"immutable snapshot already exists with different data: {path}"
             )
-        return
-    path.write_text(payload, encoding="utf-8")
-    os.chmod(path, 0o600)
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
 
 
 def build_chunk_snapshots(
     checkpoints: Sequence[Mapping[str, Any]], output_dir: Path
 ) -> BuildResult:
-    corpus, by_mode = _validate(checkpoints)
+    corpus, by_mode, parse_snapshots = _validate(checkpoints)
     output_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(output_dir, 0o700)
     artifacts: list[DatasetArtifact] = []
@@ -118,11 +159,13 @@ def build_chunk_snapshots(
             chunker = factory()
             records = []
             for checkpoint in sorted(by_mode[mode], key=lambda item: str(item["document_id"])):
-                records.extend(chunker.split(normalize(checkpoint)))
+                normalized_input = dict(checkpoint)
+                normalized_input["parse_snapshot_id"] = parse_snapshots[mode]
+                records.extend(chunker.split(normalize(normalized_input)))
             snapshot = canonical_json_hash(
                 {
                     "corpus": corpus,
-                    "parse_snapshot": by_mode[mode][0]["parse_snapshot_id"],
+                    "parse_snapshot": parse_snapshots[mode],
                     "mode": mode,
                     "strategy_hash": chunker.strategy_hash,
                     "tokenizer": tokenizer_snapshot(),
