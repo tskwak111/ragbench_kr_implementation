@@ -1,0 +1,11 @@
+# This is intentionally an empty, unfrozen starter manifest.
+# Populate only after source selection, license review, and local PDF acquisition.
+schema_version: 1
+status: draft
+targets:
+  minimum_documents: 20
+  maximum_documents: 30
+  minimum_pages: 1500
+  maximum_pages: 2000
+  maximum_organization_share: 0.35
+documents: []
