@@ -418,6 +418,8 @@ class FileExperimentRepository:
             path = self._find(run_id) / "results" / f"{_safe_id(question_id)}.json"
             if not path.exists():
                 continue
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"invalid immutable result for question {question_id}")
             try:
                 result = ExperimentQuestionResult.model_validate_json(
                     path.read_text(encoding="utf-8")

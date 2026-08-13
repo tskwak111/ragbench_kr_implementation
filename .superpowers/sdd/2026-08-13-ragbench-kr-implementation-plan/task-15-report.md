@@ -33,7 +33,7 @@ focused GREEN run.
 Final focused result after independent review fixes:
 
 ```text
-17 passed
+18 passed
 ```
 
 ## Verification
@@ -51,7 +51,7 @@ mypy src/ragbench scripts/run_experiment.py
 Success: no issues found in 57 source files
 
 pytest -m 'not live and not gold' -q
-407 passed, 4 skipped
+408 passed, 4 skipped
 
 git diff --check
 exit 0
@@ -74,4 +74,5 @@ The reviewer found three Important issues and no Critical issues: mismatched res
 misstate cache reuse, a truncated directly-written result could be counted complete, and relative
 destinations depended on process CWD. Fixes now bind resume to the exact semantic hash, validate
 every existing result and publish it atomically, and canonicalize output paths relative to the YAML
-file. Focused regressions cover each case.
+file. A follow-up review found that symlinked result paths could bypass the immutable-artifact
+boundary; result reuse now requires a non-symlink regular file. Focused regressions cover each case.

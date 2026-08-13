@@ -134,6 +134,35 @@ def test_resume_rejects_a_truncated_result_instead_of_skipping_it(tmp_path: Path
         repo.result_ids(run.run_id)
 
 
+def test_resume_rejects_a_symlinked_result_artifact(tmp_path: Path) -> None:
+    repo = FileExperimentRepository(tmp_path / "runs")
+    run = repo.create(_config(tmp_path), now=datetime(2026, 8, 14, tzinfo=UTC))
+    external = tmp_path / "external.json"
+    external.write_text(
+        ExperimentQuestionResult(
+            question_id="q1",
+            response={"answer": "mutable"},
+            evidence=(),
+            usage=UsageSnapshot(input_tokens=1, output_tokens=1, cost_usd=Decimal("0")),
+            cached=True,
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    result_path = (
+        tmp_path
+        / "runs"
+        / run.config_hash
+        / run.run_id
+        / "results"
+        / f"{canonical_json_hash('q1')}.json"
+    )
+    result_path.parent.mkdir()
+    result_path.symlink_to(external)
+
+    with pytest.raises(ValueError, match="invalid immutable result"):
+        repo.result_ids(run.run_id)
+
+
 @pytest.mark.asyncio
 async def test_threshold_stop_requires_diagnosis_acknowledgement(tmp_path: Path) -> None:
     repo = FileExperimentRepository(tmp_path / "runs")
