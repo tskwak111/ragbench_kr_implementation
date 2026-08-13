@@ -40,6 +40,8 @@ class MaterialClaim:
     supporting_evidence_ids: frozenset[str]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.supported, bool):
+            raise TypeError("claim supported state must be a boolean")
         if not isinstance(self.supporting_evidence_ids, (set, frozenset)) or any(
             not isinstance(value, str) for value in self.supporting_evidence_ids
         ):
@@ -68,6 +70,8 @@ class GenerationCase:
     claim_citations: Mapping[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.answerable, bool) or not isinstance(self.abstained, bool):
+            raise TypeError("answerable and abstained states must be booleans")
         if not isinstance(self.aliases, (list, tuple)) or any(
             not isinstance(value, str) for value in self.aliases
         ):

@@ -221,3 +221,12 @@ def test_generation_collections_reject_strings_disguised_as_containers() -> None
             (),
             {},
         )
+
+
+def test_generation_state_fields_require_actual_booleans() -> None:
+    with pytest.raises(TypeError, match="supported"):
+        MaterialClaim("c1", 1, {"e1"})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="answerable"):
+        GenerationCase(
+            "q1", "fact", "답", (), 1, "답", 0, (), {}  # type: ignore[arg-type]
+        )
