@@ -202,13 +202,13 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `Settings()`, `PriceBook.from_yaml(path)`, and `VersionBundle`; all later tasks consume them.
 
-- [ ] **Step 1: Write failing settings tests.** Assert missing `UPSTAGE_API_KEY` is allowed for offline commands, live mode requires it, budget parses as `Decimal("135.00")`, concurrency defaults to 5, retries to 5, and gold access defaults false.
-- [ ] **Step 2: Run** `pytest tests/unit/core/test_config.py -v` **and confirm import failure.**
-- [ ] **Step 3: Implement the package and settings.** Use `pydantic-settings`; include `database_url`, `upstage_api_key`, `upstage_base_url`, `max_project_budget_usd`, `max_concurrency`, `max_retries`, `run_live_upstage_tests`, `allow_gold_access`, cache/data paths, provider model IDs, and promotion deadline.
-- [ ] **Step 4: Add tool configuration.** Ruff checks `E,F,I,UP,B,SIM`; mypy uses strict mode for `src/ragbench`; pytest registers `live`, `integration`, and `gold` markers.
-- [ ] **Step 5: Add CI.** Run Ruff, mypy, and all non-live/non-gold tests on Python 3.12. Add a guard that fails if tracked files contain patterns matching `UPSTAGE_API_KEY=...` with a nonempty value.
-- [ ] **Step 6: Verify** `ruff check .`, `mypy src/ragbench`, and `pytest -m 'not live and not gold' -q` **all pass.**
-- [ ] **Step 7: Commit** `chore: bootstrap typed ragbench project`.
+- [x] **Step 1: Write failing settings tests.** Assert missing `UPSTAGE_API_KEY` is allowed for offline commands, live mode requires it, budget parses as `Decimal("135.00")`, concurrency defaults to 5, retries to 5, and gold access defaults false.
+- [x] **Step 2: Run** `pytest tests/unit/core/test_config.py -v` **and confirm import failure.**
+- [x] **Step 3: Implement the package and settings.** Use `pydantic-settings`; include `database_url`, `upstage_api_key`, `upstage_base_url`, `max_project_budget_usd`, `max_concurrency`, `max_retries`, `run_live_upstage_tests`, `allow_gold_access`, cache/data paths, provider model IDs, and promotion deadline.
+- [x] **Step 4: Add tool configuration.** Ruff checks `E,F,I,UP,B,SIM`; mypy uses strict mode for `src/ragbench`; pytest registers `live`, `integration`, and `gold` markers.
+- [x] **Step 5: Add CI.** Run Ruff, mypy, and all non-live/non-gold tests on Python 3.12. Add a guard that fails if tracked files contain patterns matching `UPSTAGE_API_KEY=...` with a nonempty value.
+- [x] **Step 6: Verify** `ruff check .`, `mypy src/ragbench`, and `pytest -m 'not live and not gold' -q` **all pass.**
+- [x] **Step 7: Commit** `chore: bootstrap typed ragbench project`.
 
 ### Task 2: Database Schema and Migrations
 
@@ -591,7 +591,7 @@ Codex must append one row after every completed task; do not mark a task complet
 
 | Task | Commit | Tests/checks | Result | Paid calls | Cost reconciled | Notes |
 |---:|---|---|---|---:|---|---|
-| 1 | — | — | pending | 0 | n/a | — |
+| 1 | `f7b562c`, `144ce70`, `603aeab` | Ruff, strict mypy, 4 non-live/non-gold tests, secret-guard matrix, `git diff --check` | pass | 0 | n/a | `PriceBook.from_yaml` deferred to Task 3 by operator decision. |
 | 2 | — | — | pending | 0 | n/a | — |
 | 3 | — | — | pending | 0 | n/a | — |
 | 4 | — | — | pending | 0 | pending | — |
