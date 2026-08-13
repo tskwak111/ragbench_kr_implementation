@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     max_project_budget_usd: Decimal = Decimal("135.00")
     max_concurrency: int = 5
+    max_lock_connections: PositiveInt = 2
     max_retries: int = 5
     run_live_upstage_tests: bool = False
     allow_gold_access: bool = False

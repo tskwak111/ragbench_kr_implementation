@@ -84,9 +84,36 @@ class ProviderStore(Protocol):
 
 
 @dataclass(slots=True)
-class _MemorySingleflightEntry:
+class _SingleflightEntry:
     lock: asyncio.Lock
     users: int = 0
+
+
+class _LocalSingleflightRegistry:
+    """Reference-counted process-local key coalescing with cancellation cleanup."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, _SingleflightEntry] = {}
+
+    @asynccontextmanager
+    async def hold(self, cache_key: str) -> AsyncIterator[None]:
+        entry = self._entries.setdefault(cache_key, _SingleflightEntry(asyncio.Lock()))
+        entry.users += 1
+        acquired = False
+        try:
+            await entry.lock.acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                entry.lock.release()
+            entry.users -= 1
+            if entry.users == 0 and self._entries.get(cache_key) is entry:
+                del self._entries[cache_key]
+
+    @property
+    def count(self) -> int:
+        return len(self._entries)
 
 
 class MemoryProviderStore:
@@ -94,7 +121,7 @@ class MemoryProviderStore:
 
     def __init__(self) -> None:
         self.entries: dict[str, CachedResponse] = {}
-        self._singleflight_entries: dict[str, _MemorySingleflightEntry] = {}
+        self._singleflight_registry = _LocalSingleflightRegistry()
 
     async def get(self, cache_key: str) -> CachedResponse | None:
         cached = self.entries.get(cache_key)
@@ -115,26 +142,13 @@ class MemoryProviderStore:
 
     @asynccontextmanager
     async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
-        entry = self._singleflight_entries.setdefault(
-            cache_key, _MemorySingleflightEntry(asyncio.Lock())
-        )
-        entry.users += 1
-        acquired = False
-        try:
-            await entry.lock.acquire()
-            acquired = True
+        async with self._singleflight_registry.hold(cache_key):
             yield
-        finally:
-            if acquired:
-                entry.lock.release()
-            entry.users -= 1
-            if entry.users == 0 and self._singleflight_entries.get(cache_key) is entry:
-                del self._singleflight_entries[cache_key]
 
     @property
     def singleflight_lock_count(self) -> int:
         """Return retained key-lock count for lifecycle monitoring."""
-        return len(self._singleflight_entries)
+        return self._singleflight_registry.count
 
 
 class SqlAlchemyProviderStore:
@@ -145,7 +159,10 @@ class SqlAlchemyProviderStore:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         lock_session_factory: async_sessionmaker[AsyncSession],
+        max_lock_connections: int,
     ) -> None:
+        if max_lock_connections <= 0:
+            raise ValueError("max_lock_connections must be positive")
         if lock_session_factory is session_factory:
             raise ValueError("lock_session_factory must be distinct from session_factory")
         operational_bind = session_factory.kw.get("bind")
@@ -158,6 +175,8 @@ class SqlAlchemyProviderStore:
             raise ValueError("lock_session_factory must be backed by NullPool")
         self._session_factory = session_factory
         self._lock_session_factory = lock_session_factory
+        self._singleflight_registry = _LocalSingleflightRegistry()
+        self._lock_connection_permits = asyncio.Semaphore(max_lock_connections)
 
     async def get(self, cache_key: str) -> CachedResponse | None:
         async with self._session_factory() as session:
@@ -202,11 +221,21 @@ class SqlAlchemyProviderStore:
     @asynccontextmanager
     async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
         lock_id = _cache_lock_id(cache_key)
-        async with self._lock_session_factory() as session, session.begin():
+        async with (
+            self._singleflight_registry.hold(cache_key),
+            self._lock_connection_permits,
+            self._lock_session_factory() as session,
+            session.begin(),
+        ):
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id}
             )
             yield
+
+    @property
+    def singleflight_lock_count(self) -> int:
+        """Return retained process-local key-lock count for lifecycle monitoring."""
+        return self._singleflight_registry.count
 
 
 Sleep = Callable[[float], Awaitable[None]]

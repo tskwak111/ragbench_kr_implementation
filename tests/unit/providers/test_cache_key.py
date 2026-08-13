@@ -119,17 +119,76 @@ class _StatementFactory:
         return self.session
 
 
+class _ObservedLockSession(_StatementSession):
+    def __init__(self, factory: "_ObservedLockFactory") -> None:
+        super().__init__()
+        self._factory = factory
+
+    async def __aenter__(self) -> "_ObservedLockSession":
+        await super().__aenter__()
+        self._factory.active += 1
+        self._factory.max_active = max(self._factory.max_active, self._factory.active)
+        if self._factory.active == self._factory.expected_limit:
+            self._factory.limit_reached.set()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self._factory.active -= 1
+
+
+class _ObservedLockFactory:
+    def __init__(self, *, expected_limit: int) -> None:
+        self.calls = 0
+        self.active = 0
+        self.max_active = 0
+        self.expected_limit = expected_limit
+        self.limit_reached = asyncio.Event()
+        self.sessions: list[_ObservedLockSession] = []
+        pool = NullPool(lambda: None)
+        self.kw = {"bind": SimpleNamespace(sync_engine=SimpleNamespace(pool=pool))}
+
+    def __call__(self) -> _ObservedLockSession:
+        self.calls += 1
+        session = _ObservedLockSession(self)
+        self.sessions.append(session)
+        return session
+
+
 def _make_store(
     operational_session: _StatementSession | None = None,
     lock_session: _StatementSession | None = None,
+    *,
+    max_lock_connections: int = 2,
 ) -> tuple[SqlAlchemyProviderStore, _StatementFactory, _StatementFactory]:
     operational_factory = _StatementFactory(operational_session or _StatementSession())
     lock_factory = _StatementFactory(lock_session or _StatementSession(), null_pool=True)
     store = SqlAlchemyProviderStore(
         operational_factory,  # type: ignore[arg-type]
         lock_session_factory=lock_factory,  # type: ignore[arg-type]
+        max_lock_connections=max_lock_connections,
     )
     return store, operational_factory, lock_factory
+
+
+def _make_observed_store(
+    *, max_lock_connections: int
+) -> tuple[SqlAlchemyProviderStore, _ObservedLockFactory]:
+    operational_factory = _StatementFactory(_StatementSession())
+    lock_factory = _ObservedLockFactory(expected_limit=max_lock_connections)
+    store = SqlAlchemyProviderStore(
+        operational_factory,  # type: ignore[arg-type]
+        lock_session_factory=lock_factory,  # type: ignore[arg-type]
+        max_lock_connections=max_lock_connections,
+    )
+    return store, lock_factory
 
 
 @pytest.mark.asyncio
@@ -218,6 +277,153 @@ async def test_sql_singleflight_uses_deterministic_signed_transaction_lock() -> 
     assert second_session.events[0][1] != first_lock_id
 
 
+@pytest.mark.asyncio
+async def test_sql_same_key_callers_open_only_one_lock_session_at_a_time() -> None:
+    """Catch same-process duplicates consuming one PostgreSQL connection per waiter."""
+    store, lock_factory = _make_observed_store(max_lock_connections=4)
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def worker(ordinal: int) -> None:
+        async with store.singleflight("shared-key"):
+            if ordinal == 0:
+                first_entered.set()
+                await release_first.wait()
+
+    first = asyncio.create_task(worker(0))
+    await first_entered.wait()
+    waiters = [asyncio.create_task(worker(ordinal)) for ordinal in range(1, 9)]
+    await asyncio.sleep(0)
+
+    assert lock_factory.calls == 1
+    assert lock_factory.max_active == 1
+    assert store.singleflight_lock_count == 1
+
+    release_first.set()
+    await asyncio.gather(first, *waiters)
+
+    assert lock_factory.max_active == 1
+    assert lock_factory.active == 0
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_unique_keys_never_exceed_lock_connection_bound() -> None:
+    """Catch a distinct-key stampede exceeding the configured PostgreSQL connection cap."""
+    store, lock_factory = _make_observed_store(max_lock_connections=2)
+    release = asyncio.Event()
+
+    async def worker(ordinal: int) -> None:
+        async with store.singleflight(f"key-{ordinal}"):
+            await release.wait()
+
+    tasks = [asyncio.create_task(worker(ordinal)) for ordinal in range(12)]
+    await lock_factory.limit_reached.wait()
+    await asyncio.sleep(0)
+
+    assert lock_factory.calls == 2
+    assert lock_factory.max_active == 2
+    assert store.singleflight_lock_count == 12
+
+    release.set()
+    await asyncio.gather(*tasks)
+
+    assert lock_factory.max_active == 2
+    assert lock_factory.active == 0
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_cancelled_local_waiter_cleans_registry_without_opening_session() -> None:
+    """Catch cancellation while locally coalesced leaking a key entry or DB session."""
+    store, lock_factory = _make_observed_store(max_lock_connections=2)
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder() -> None:
+        async with store.singleflight("shared-key"):
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def waiter() -> None:
+        async with store.singleflight("shared-key"):
+            pass
+
+    holder_task = asyncio.create_task(holder())
+    await holder_entered.wait()
+    waiter_task = asyncio.create_task(waiter())
+    await asyncio.sleep(0)
+    waiter_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter_task
+
+    assert lock_factory.calls == 1
+    assert store.singleflight_lock_count == 1
+
+    release_holder.set()
+    await holder_task
+
+    assert lock_factory.active == 0
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_cancelled_permit_waiter_cleans_registry_and_preserves_permit() -> None:
+    """Catch cancellation before session open leaking either local state or a permit."""
+    store, lock_factory = _make_observed_store(max_lock_connections=1)
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder() -> None:
+        async with store.singleflight("first-key"):
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def waiter() -> None:
+        async with store.singleflight("second-key"):
+            pass
+
+    holder_task = asyncio.create_task(holder())
+    await holder_entered.wait()
+    waiter_task = asyncio.create_task(waiter())
+    await asyncio.sleep(0)
+
+    assert lock_factory.calls == 1
+    assert store.singleflight_lock_count == 2
+
+    waiter_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter_task
+
+    assert lock_factory.calls == 1
+    assert store.singleflight_lock_count == 1
+
+    release_holder.set()
+    await holder_task
+    async with asyncio.timeout(1), store.singleflight("probe-key"):
+        pass
+
+    assert lock_factory.calls == 2
+    assert lock_factory.active == 0
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.parametrize("max_lock_connections", [0, -1])
+def test_sql_store_rejects_nonpositive_lock_connection_bound(
+    max_lock_connections: int,
+) -> None:
+    """Catch disabling the dedicated lock-connection safety bound."""
+    operational_factory = _StatementFactory(_StatementSession())
+    lock_factory = _ObservedLockFactory(expected_limit=1)
+
+    with pytest.raises(ValueError, match="max_lock_connections must be positive"):
+        SqlAlchemyProviderStore(
+            operational_factory,  # type: ignore[arg-type]
+            lock_session_factory=lock_factory,  # type: ignore[arg-type]
+            max_lock_connections=max_lock_connections,
+        )
+
+
 def test_sql_store_requires_distinct_nullpool_lock_factory() -> None:
     """Catch silent reuse of the bounded operational pool for advisory-lock waiters."""
     session = _StatementSession()
@@ -226,6 +432,7 @@ def test_sql_store_requires_distinct_nullpool_lock_factory() -> None:
         SqlAlchemyProviderStore(
             shared_factory,  # type: ignore[arg-type]
             lock_session_factory=shared_factory,  # type: ignore[arg-type]
+            max_lock_connections=2,
         )
 
     operational_factory = _StatementFactory(session)
@@ -234,6 +441,7 @@ def test_sql_store_requires_distinct_nullpool_lock_factory() -> None:
         SqlAlchemyProviderStore(
             operational_factory,  # type: ignore[arg-type]
             lock_session_factory=pooled_lock_factory,  # type: ignore[arg-type]
+            max_lock_connections=2,
         )
 
 
@@ -251,11 +459,13 @@ async def test_sql_store_accepts_real_dedicated_nullpool_factory() -> None:
         SqlAlchemyProviderStore(
             operational_factory,
             lock_session_factory=lock_factory,
+            max_lock_connections=2,
         )
         with pytest.raises(ValueError, match="NullPool"):
             SqlAlchemyProviderStore(
                 operational_factory,
                 lock_session_factory=async_sessionmaker(pooled_lock_engine),
+                max_lock_connections=2,
             )
     finally:
         await pooled_lock_engine.dispose()
@@ -274,6 +484,7 @@ async def test_sql_store_rejects_distinct_factories_bound_to_same_engine() -> No
             SqlAlchemyProviderStore(
                 async_sessionmaker(shared_engine),
                 lock_session_factory=async_sessionmaker(shared_engine),
+                max_lock_connections=2,
             )
     finally:
         await shared_engine.dispose()
@@ -300,7 +511,7 @@ async def test_sql_cache_operations_never_consume_lock_sessions() -> None:
 async def test_sql_singleflight_error_exits_transaction_without_manual_unlock() -> None:
     """Catch an exceptional protected section leaking a session-scoped advisory lock."""
     lock_session = _StatementSession()
-    store, _, _ = _make_store(lock_session=lock_session)
+    store, _, lock_factory = _make_store(lock_session=lock_session, max_lock_connections=1)
 
     with pytest.raises(RuntimeError, match="boom"):
         async with store.singleflight("a" * 64):
@@ -313,13 +524,19 @@ async def test_sql_singleflight_error_exits_transaction_without_manual_unlock() 
     assert lock_session.session_events == ["session-enter", "session-exit:RuntimeError"]
     assert len(lock_session.events) == 1
     assert lock_session.events[0][0] == "xact-lock"
+    assert store.singleflight_lock_count == 0
+
+    async with asyncio.timeout(1), store.singleflight("probe-key"):
+        pass
+    assert lock_factory.calls == 2
+    assert store.singleflight_lock_count == 0
 
 
 @pytest.mark.asyncio
 async def test_sql_singleflight_cancellation_exits_transaction() -> None:
     """Catch cancellation bypassing transaction cleanup while the lock is held."""
     lock_session = _StatementSession()
-    store, _, _ = _make_store(lock_session=lock_session)
+    store, _, lock_factory = _make_store(lock_session=lock_session, max_lock_connections=1)
     entered = asyncio.Event()
 
     async def holder() -> None:
@@ -340,3 +557,9 @@ async def test_sql_singleflight_cancellation_exits_transaction() -> None:
     assert lock_session.session_events == ["session-enter", "session-exit:CancelledError"]
     assert len(lock_session.events) == 1
     assert lock_session.events[0][0] == "xact-lock"
+    assert store.singleflight_lock_count == 0
+
+    async with asyncio.timeout(1), store.singleflight("probe-key"):
+        pass
+    assert lock_factory.calls == 2
+    assert store.singleflight_lock_count == 0
