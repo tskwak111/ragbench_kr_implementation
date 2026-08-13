@@ -93,18 +93,26 @@ class GeneratorMetadata(_FrozenModel):
 
 class UnanswerableTransform(_FrozenModel):
     target_document_id: str = Field(min_length=1)
+    target_page: int = Field(gt=0)
+    target_chunk_id: str = Field(min_length=1)
     original_fact: str = Field(min_length=1)
     transformed_fact: str = Field(min_length=1)
+    original_value: str = Field(min_length=1)
+    transformed_value: str = Field(min_length=1)
     operation: str = Field(default="controlled_substitution", min_length=1)
 
     @model_validator(mode="after")
     def _facts_must_differ(self) -> Self:
         if _search_text(self.original_fact) == _search_text(self.transformed_fact):
             raise ValueError("unanswerable transform must change the source fact")
-        if not _fact_anchors(self.original_fact).intersection(
-            _fact_anchors(self.transformed_fact)
+        original_value, transformed_value = _single_value_substitution(
+            self.original_fact, self.transformed_fact
+        )
+        if (self.original_value, self.transformed_value) != (
+            original_value,
+            transformed_value,
         ):
-            raise ValueError("unanswerable transform must preserve a source-fact anchor")
+            raise ValueError("unanswerable transform values do not match the fact substitution")
         return self
 
 
@@ -778,11 +786,17 @@ def controlled_unanswerable(
     if len(target_documents) != 1:
         raise ValueError("controlled unanswerable requires exactly one target document")
     target_document_id = next(iter(target_documents))
-    if not any(
-        _search_text(original_fact) in _search_text(window.content)
+    source_units = tuple(
+        unit
         for window in document_windows
-    ):
+        for unit in window.source_units
+        if _search_text(original_fact) in _search_text(unit.content)
+    )
+    if not source_units:
         raise ValueError("original fact is not present in the target document")
+    original_value, transformed_value = _single_value_substitution(
+        original_fact, asserted_absent_fact
+    )
     normalized_fact = _search_text(asserted_absent_fact)
     if not normalized_fact:
         raise ValueError("controlled absent fact cannot be blank")
@@ -806,8 +820,12 @@ def controlled_unanswerable(
         asserted_absent_facts=(asserted_absent_fact,),
         unanswerable_transform=UnanswerableTransform(
             target_document_id=target_document_id,
+            target_page=source_units[0].page,
+            target_chunk_id=source_units[0].chunk_id,
             original_fact=original_fact,
             transformed_fact=asserted_absent_fact,
+            original_value=original_value,
+            transformed_value=transformed_value,
         ),
         generator=metadata,
         validation=ValidationStatus(decision=ValidationDecision.UNVALIDATED),
@@ -845,9 +863,18 @@ def _candidate_payload_hash(candidates: Sequence[QuestionCandidate]) -> str:
 def _validate_candidate_window(candidate: QuestionCandidate, window: SourceWindow) -> None:
     if candidate.unanswerable_transform is not None:
         transform = candidate.unanswerable_transform
+        units = tuple(
+            unit
+            for unit in window.source_units
+            if unit.page == transform.target_page
+            and unit.chunk_id == transform.target_chunk_id
+        )
         if (
             transform.target_document_id != window.document_id
-            or _search_text(transform.original_fact) not in _search_text(window.content)
+            or not any(
+                _search_text(transform.original_fact) in _search_text(unit.content)
+                for unit in units
+            )
             or _search_text(transform.transformed_fact) in _search_text(window.content)
         ):
             raise ValueError("candidate transform is outside the assigned source window")
@@ -914,8 +941,22 @@ def _search_text(value: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", unicodedata.normalize("NFKC", value).lower())
 
 
-def _fact_anchors(value: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z가-힣]{2,}", unicodedata.normalize("NFKC", value).lower())
-    }
+def _fact_tokens(value: str) -> tuple[str, ...]:
+    return tuple(
+        re.findall(r"[0-9a-z가-힣]+", unicodedata.normalize("NFKC", value).lower())
+    )
+
+
+def _single_value_substitution(original: str, transformed: str) -> tuple[str, str]:
+    original_tokens = _fact_tokens(original)
+    transformed_tokens = _fact_tokens(transformed)
+    if len(original_tokens) != len(transformed_tokens) or len(original_tokens) < 2:
+        raise ValueError("unanswerable transform must change exactly a single value")
+    differences = [
+        (left, right)
+        for left, right in zip(original_tokens, transformed_tokens, strict=True)
+        if left != right
+    ]
+    if len(differences) != 1:
+        raise ValueError("unanswerable transform must change exactly a single value")
+    return differences[0]

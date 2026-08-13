@@ -163,8 +163,12 @@ def test_unanswerable_absence_and_contamination_are_checked_across_document() ->
         asserted_absent_facts=("매출은 30원",),
         unanswerable_transform={
             "target_document_id": "doc-1",
+            "target_page": 1,
+            "target_chunk_id": "c1",
             "original_fact": "매출은 123원",
             "transformed_fact": "매출은 30원",
+            "original_value": "123원",
+            "transformed_value": "30원",
         },
         generator=_metadata("negative"),
         validation=ValidationStatus(decision=ValidationDecision.UNVALIDATED),
@@ -289,13 +293,62 @@ def test_exact_page_chunk_unit_and_complex_support_fail_closed() -> None:
         evidence="매출은 증가했다. 비용은 감소했다.",
         kind=QuestionType.COMPLEX_SUMMARY,
     )
+    negated = _candidate(
+        "negated",
+        question="매출 추세를 요약하라",
+        answer="매출은 증가했다",
+        evidence="매출은 안 증가했다",
+        kind=QuestionType.COMPLEX_SUMMARY,
+    )
 
     wrong_report = validate_candidates((wrong_unit,), (multi,))
     hallucinated_report = validate_candidates((hallucinated,), _corpus())
     reversed_report = validate_candidates((reversed_relation,), _corpus())
+    negated_report = validate_candidates((negated,), _corpus())
     assert "evidence_not_found" in wrong_report.items[0].validation.rule_codes
     assert "answer_not_supported" in hallucinated_report.items[0].validation.rule_codes
     assert "answer_not_supported" in reversed_report.items[0].validation.rule_codes
+    assert "answer_not_supported" in negated_report.items[0].validation.rule_codes
+
+
+def test_unanswerables_consume_assigned_page_capacity() -> None:
+    """Catch negative rows bypassing page caps because they have no positive evidence spans."""
+    base = QuestionCandidate(
+        candidate_id="u1",
+        question="매출은 999원인가?",
+        gold_answer=None,
+        evidence_spans=(),
+        question_type=QuestionType.UNANSWERABLE,
+        difficulty=Difficulty.HARD,
+        answerable=False,
+        asserted_absent_facts=("매출은 999원",),
+        unanswerable_transform={
+            "target_document_id": "doc-1",
+            "target_page": 1,
+            "target_chunk_id": "c1",
+            "original_fact": "매출은 123원",
+            "transformed_fact": "매출은 999원",
+            "original_value": "123원",
+            "transformed_value": "999원",
+        },
+        generator=_metadata("u1"),
+        validation=ValidationStatus(decision=ValidationDecision.UNVALIDATED),
+    )
+    second = base.model_copy(
+        update={
+            "candidate_id": "u2",
+            "question": "보고서의 매출은 999원이라는 사실인가?",
+            "generator": _metadata("u2"),
+        }
+    )
+
+    report = validate_candidates(
+        (base, second),
+        _corpus(),
+        config=ValidationConfig(per_page_cap=1, duplicate_similarity_threshold=1.0),
+    )
+    assert report.accepted_count == 1
+    assert "per_page_cap_exceeded" in report.items[1].validation.rule_codes
 
 
 def test_validation_identity_changes_with_rules_and_global_candidate_ids_are_unique() -> None:

@@ -118,3 +118,13 @@ every resumed candidate's server ID, type, plan/batch/window/model metadata, and
 Fresh final post-review verification raised the focused suite to 26 passing tests. The complete
 offline suite passed `289 passed, 4 skipped`; Ruff, strict mypy, `git diff --check`, and the
 credential-pattern scan remained clean after the final correction round.
+
+One last adversarial re-review found that single-character Korean negation was omitted, a generic
+shared subject could still authorize an unrelated transform, and negative candidates did not
+consume page capacity. The final schema now requires an exact one-token value substitution and
+stores both values plus target page/chunk; generation and validation bind the original fact to
+that exact unit. Semantically significant `안`/`못` tokens participate in ordered support checks,
+and unanswerable target pages consume the same cumulative page cap as positive evidence. The
+focused suite is now 27 tests; the final full-suite evidence follows the verification command.
+The final offline result was `290 passed, 4 skipped`, with Ruff, strict mypy, and diff checks
+clean.

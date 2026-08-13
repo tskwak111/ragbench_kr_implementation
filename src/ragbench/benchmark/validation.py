@@ -154,6 +154,16 @@ def validate_candidates(
         )
         if candidate.unanswerable_transform is not None:
             evidence_documents = (candidate.unanswerable_transform.target_document_id,)
+        candidate_pages = {
+            (span.document_id, span.page) for span in candidate.evidence_spans
+        }
+        if candidate.unanswerable_transform is not None:
+            candidate_pages.add(
+                (
+                    candidate.unanswerable_transform.target_document_id,
+                    candidate.unanswerable_transform.target_page,
+                )
+            )
         if candidate.candidate_id in seen_candidate_ids:
             rules.append("duplicate_candidate_id")
         seen_candidate_ids.add(candidate.candidate_id)
@@ -161,7 +171,7 @@ def validate_candidates(
             rules.append("duplicate_question")
         rules.extend(_evidence_rules(candidate, pages, active_config))
         rules.extend(_answer_rules(candidate))
-        rules.extend(_unanswerable_rules(candidate, document_text))
+        rules.extend(_unanswerable_rules(candidate, document_text, pages))
         searchable = " ".join(
             filter(None, (candidate.question, candidate.gold_answer or ""))
         )
@@ -185,9 +195,9 @@ def validate_candidates(
             ):
                 rules.append("per_document_cap_exceeded")
             elif any(
-                accepted_page_counts[(span.document_id, span.page)]
+                accepted_page_counts[(document_id, page)]
                 >= active_config.per_page_cap
-                for span in candidate.evidence_spans
+                for document_id, page in candidate_pages
             ):
                 rules.append("per_page_cap_exceeded")
 
@@ -203,9 +213,7 @@ def validate_candidates(
             accepted_type_counts[candidate.question_type] += 1
             for document_id in evidence_documents:
                 accepted_document_counts[document_id] += 1
-            for document_page in {
-                (span.document_id, span.page) for span in candidate.evidence_spans
-            }:
+            for document_page in candidate_pages:
                 accepted_page_counts[document_page] += 1
 
     accepted = tuple(
@@ -351,7 +359,9 @@ def _answer_rules(candidate: QuestionCandidate) -> list[str]:
 
 
 def _unanswerable_rules(
-    candidate: QuestionCandidate, document_text: Mapping[str, str]
+    candidate: QuestionCandidate,
+    document_text: Mapping[str, str],
+    pages: Mapping[tuple[str, int], tuple[SourceWindow, ...]],
 ) -> list[str]:
     if candidate.answerable:
         return []
@@ -362,7 +372,19 @@ def _unanswerable_rules(
     if target is None:
         return ["impossible_target_document"]
     rules: list[str] = []
-    if _search_text(transform.original_fact) not in _search_text(target):
+    target_units = tuple(
+        unit
+        for window in pages.get(
+            (transform.target_document_id, transform.target_page), ()
+        )
+        for unit in window.source_units
+        if unit.page == transform.target_page
+        and unit.chunk_id == transform.target_chunk_id
+    )
+    if not any(
+        _search_text(transform.original_fact) in _search_text(unit.content)
+        for unit in target_units
+    ):
         rules.append("original_fact_not_found")
     if _search_text(transform.transformed_fact) in _search_text(target):
         rules.append("asserted_absent_fact_present")
@@ -446,5 +468,5 @@ def _content_token_sequence(value: str) -> tuple[str, ...]:
     return tuple(
         token
         for token in re.findall(r"[0-9a-z가-힣]+", unicodedata.normalize("NFKC", value).lower())
-        if len(token) >= 2
+        if len(token) >= 2 or token in {"안", "못"}
     )

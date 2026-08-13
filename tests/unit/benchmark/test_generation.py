@@ -361,7 +361,7 @@ def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> Non
     assert candidate.unanswerable_transform is not None
     assert candidate.unanswerable_transform.target_document_id == "doc-1"
 
-    with pytest.raises(ValueError, match="present"):
+    with pytest.raises(ValueError, match="single value"):
         controlled_unanswerable(
             question="매출은 101원인가?",
             original_fact="매출은 101원",
@@ -370,12 +370,34 @@ def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> Non
             metadata=candidate.generator,
         )
 
-    with pytest.raises(ValueError, match="anchor"):
+    with pytest.raises(ValueError, match="single value"):
         controlled_unanswerable(
             question="CEO는 홍길동인가?",
             original_fact="매출은 101원",
             asserted_absent_fact="CEO는 홍길동",
             document_windows=(window,),
+            metadata=candidate.generator,
+        )
+
+    with pytest.raises(ValueError, match="single value"):
+        controlled_unanswerable(
+            question="회사는 화성 기지를 세웠는가?",
+            original_fact="회사는 매출이 증가했다",
+            asserted_absent_fact="회사는 화성 기지를 세웠다",
+            document_windows=(
+                window.model_copy(
+                    update={
+                        "content": "회사는 매출이 증가했다",
+                        "source_units": (
+                            SourceUnit(
+                                page=1,
+                                chunk_id="chunk-1-1",
+                                content="회사는 매출이 증가했다",
+                            ),
+                        ),
+                    }
+                ),
+            ),
             metadata=candidate.generator,
         )
 
