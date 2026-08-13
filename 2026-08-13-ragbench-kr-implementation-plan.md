@@ -287,11 +287,11 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `normalize(parsed) -> list[DocumentBlock]`, `FixedChunker(size, overlap).split(blocks)`, and `HeadingAwareChunker(target_size=600, overlap=100).split(blocks)` returning `ChunkRecord` values.
 
-- [ ] **Step 1: Write fixture-driven tests** for Korean text, tables, headings, empty pages, repeated headers/footers, page transitions, chunks smaller than overlap, and deterministic IDs.
-- [ ] **Step 2: Implement conservative normalization.** Normalize Unicode/line endings and repeated boilerplate but preserve numbers, table cell order, page anchors, headings, and original normalized-to-source provenance.
-- [ ] **Step 3: Implement token-aware fixed chunking** for `(300,0)`, `(300,100)`, `(600,0)`, `(600,100)`, `(1000,0)`, `(1000,100)`. Define overlap in tokens and prevent zero-progress loops.
-- [ ] **Step 4: Implement heading-aware chunking.** Prefer section boundaries, split oversized sections token-wise, merge undersized neighboring blocks within the same section, and retain page ranges.
-- [ ] **Step 5: Add invariants**: deterministic output, no lost non-boilerplate text, monotonic ordinals, valid page ranges, token count within documented tolerance, and unique chunk IDs containing parse snapshot and strategy hash.
+- [x] **Step 1: Write fixture-driven tests** for Korean text, tables, headings, empty pages, repeated headers/footers, page transitions, chunks smaller than overlap, and deterministic IDs.
+- [x] **Step 2: Implement conservative normalization.** Normalize Unicode/line endings and repeated boilerplate but preserve numbers, table cell order, page anchors, headings, and original normalized-to-source provenance.
+- [x] **Step 3: Implement token-aware fixed chunking** for `(300,0)`, `(300,100)`, `(600,0)`, `(600,100)`, `(1000,0)`, `(1000,100)`. Define overlap in tokens and prevent zero-progress loops.
+- [x] **Step 4: Implement heading-aware chunking.** Prefer section boundaries, split oversized sections token-wise, merge undersized neighboring blocks within the same section, and retain page ranges.
+- [x] **Step 5: Add invariants**: deterministic output, no lost non-boilerplate text, monotonic ordinals, valid page ranges, token count within documented tolerance, and unique chunk IDs containing parse snapshot and strategy hash.
 - [ ] **Step 6: Build all 14 core chunk datasets** (2 parse modes × 7 strategies) and export size/coverage distributions.
 - [ ] **Step 7: Manually inspect one text-heavy and one table-heavy document in `01_chunk_inspection.ipynb`; record boundary defects.**
 - [ ] **Step 8: Commit** `feat: add provenance-preserving chunkers`.
@@ -597,7 +597,7 @@ Codex must append one row after every completed task; do not mark a task complet
 | 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
 | 5 | `f57966e`..`734a4d9` | Ruff, strict mypy, 108 passed/2 skips, 30 ingestion tests | partial | 0 | n/a | Framework approved; real corpus, licensing/manual inspection, freeze and public manifest pending. |
 | 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | 0 | pending | Framework approved; real dual parse, 95% gate, paired QA and console reconciliation pending. |
-| 7 | — | — | pending | 0 | n/a | — |
+| 7 | `c7c23c4`, `dea3cd3` | Ruff, strict mypy, 164 passed/3 skips, wheel asset audit | partial | 0 | n/a | Framework approved; real 14 datasets and notebook inspection pending parsed corpus. |
 | 8 | — | — | pending | 0 | pending | — |
 | 9 | — | — | pending | 0 | n/a | — |
 | 10 | — | — | pending | 0 | pending | — |
