@@ -28,6 +28,9 @@ JUDGE_RUBRIC = {
 }
 JUDGE_RUBRIC_HASH = canonical_json_hash(JUDGE_RUBRIC)
 _TOKEN_MARGIN = 16
+_MACHINE_ID = re.compile(r"\A(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)"
+                         r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_ASCII_TOKEN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9][A-Za-z0-9_-]*(?![A-Za-z0-9_-])")
 
 
 class JudgeParseError(ValueError):
@@ -42,11 +45,21 @@ class EvidenceUnit(_StrictModel):
     evidence_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
 
-    @field_validator("evidence_id", "text")
+    @field_validator("evidence_id")
     @classmethod
-    def _not_blank(cls, value: str) -> str:
+    def _valid_evidence_id(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("evidence fields cannot be blank")
+            raise ValueError("evidence ID cannot be blank")
+        normalized = value.strip()
+        if not _is_machine_id(normalized):
+            raise ValueError("evidence ID must use the machine-readable letter/digit grammar")
+        return normalized
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("evidence text cannot be blank")
         return value.strip()
 
 
@@ -224,6 +237,15 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
         raise JudgeParseError("faithfulness and citation support require retrieved context")
     if any(citation.supported and not citation.claim_ids for citation in record.citations):
         raise JudgeParseError("supported citation must link at least one supplied claim")
+    if any(
+        citation.supported
+        and (
+            citation.citation_id not in retrieved_evidence
+            or citation.citation_id not in citation.evidence_ids
+        )
+        for citation in record.citations
+    ):
+        raise JudgeParseError("supported citation must resolve its own retrieved citation ID")
     if any(claim.supported and not claim.evidence_ids for claim in record.claims) or any(
         citation.supported and not citation.evidence_ids for citation in record.citations
     ):
@@ -275,8 +297,12 @@ def _rationale_mentions(evidence_id: str, rationale: str) -> bool:
 
 
 def _evidence_like_ids(rationale: str) -> set[str]:
-    """Extract explicit machine-readable IDs; ordinary Korean/English prose is unaffected."""
-    return set(re.findall(r"(?<![A-Za-z0-9_-])[eg]\d+(?![A-Za-z0-9_-])", rationale))
+    """Extract all tokens under the same explicit grammar accepted for evidence IDs."""
+    return {token for token in _ASCII_TOKEN.findall(rationale) if _is_machine_id(token)}
+
+
+def _is_machine_id(value: str) -> bool:
+    return _MACHINE_ID.fullmatch(value) is not None
 
 
 class JudgeRunner:

@@ -106,6 +106,28 @@ def test_faithfulness_and_citation_support_cannot_use_gold_evidence() -> None:
         parse_judge_response(json.dumps(payload), _judge_input())
 
 
+def test_supported_citation_must_resolve_its_own_retrieved_evidence_id() -> None:
+    value = JudgeInput(
+        question="질문",
+        gold_answer="정답",
+        gold_evidence=(EvidenceUnit(evidence_id="g1", text="정답 근거"),),
+        model_answer="답변",
+        answer_claims=("c1: 주장",),
+        model_citation_ids=("e999",),
+        retrieved_context=(EvidenceUnit(evidence_id="src-1", text="주장 근거"),),
+    )
+    payload = _judge_payload()
+    payload["correctness_evidence_ids"] = ["g1"]
+    payload["rationale"] = "g1을 사용했다."
+    payload["claims"][0]["evidence_ids"] = ["src-1"]  # type: ignore[index]
+    payload["claims"][0]["rationale"] = "src-1을 사용했다."  # type: ignore[index]
+    payload["citations"][0]["citation_id"] = "e999"  # type: ignore[index]
+    payload["citations"][0]["evidence_ids"] = ["src-1"]  # type: ignore[index]
+    payload["citations"][0]["rationale"] = "src-1을 사용했다."  # type: ignore[index]
+    with pytest.raises(JudgeParseError, match="citation ID"):
+        parse_judge_response(json.dumps(payload), value)
+
+
 def test_judge_parser_requires_rationale_to_name_its_evidence() -> None:
     payload = _judge_payload()
     payload["claims"][0]["rationale"] = "외부 지식상 맞다."  # type: ignore[index]
@@ -122,9 +144,14 @@ def test_judge_rationale_does_not_match_an_evidence_id_prefix() -> None:
 
 def test_judge_rationale_rejects_an_extra_invented_evidence_id() -> None:
     payload = _judge_payload()
-    payload["rationale"] = "e1과 존재하지 않는 e999를 확인했다."
+    payload["rationale"] = "e1과 존재하지 않는 src-999를 확인했다."
     with pytest.raises(JudgeParseError, match="invented"):
         parse_judge_response(json.dumps(payload), _judge_input())
+
+
+def test_evidence_ids_use_a_machine_readable_letter_digit_grammar() -> None:
+    with pytest.raises(ValueError, match="machine-readable"):
+        EvidenceUnit(evidence_id="source", text="근거")
 
 
 def test_blind_prompt_excludes_system_and_configuration_identity() -> None:

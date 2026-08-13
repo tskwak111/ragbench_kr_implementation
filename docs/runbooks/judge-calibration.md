@@ -23,7 +23,9 @@ ground truth or as the final authority.
 
 Rubric `judge-v1` has independent fields for correctness on `[0, 1]`, one faithfulness decision
 for every material claim, one support decision for every model citation, and a benchmark-defect
-flag. Every positive decision names supplied evidence IDs. The parser rejects unknown fields,
+flag. Evidence IDs use a bounded ASCII machine-ID grammar containing both a letter and a digit.
+Every positive decision names supplied evidence IDs; claim/citation support uses retrieved context,
+and a supported citation must resolve its own cited retrieved unit. The parser rejects unknown fields,
 missing claim/citation decisions, invented IDs, Markdown fences, and malformed JSON. It never
 repairs meaning or invents citations. The rubric's canonical JSON SHA-256 is stored with every
 judge record.
