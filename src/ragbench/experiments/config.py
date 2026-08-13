@@ -15,6 +15,27 @@ RetrieverName = Literal["dense", "bm25", "hybrid"]
 TopK = Literal[3, 5, 10]
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[object, object]:
+    output: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in output:
+            raise ValueError(f"duplicate YAML key: {key}")
+        output[key] = loader.construct_object(value_node, deep=deep)
+    return output
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 class RRFConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -57,7 +78,7 @@ class RetrievalExperimentConfig(BaseModel):
     def _identity_not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("experiment identity cannot be blank")
-        return value
+        return value.strip()
 
     @model_validator(mode="after")
     def _rrf_matches_retriever(self) -> Self:
@@ -71,7 +92,7 @@ class RetrievalExperimentConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> Self:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
         if not isinstance(raw, dict):
             raise ValueError("experiment YAML root must be a mapping")
         return cls.model_validate(raw)

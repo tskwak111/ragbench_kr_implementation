@@ -25,9 +25,7 @@ def test_metrics_match_hand_calculated_multi_evidence_ranking() -> None:
 
 
 def test_no_evidence_questions_are_reported_but_not_scored_as_successes() -> None:
-    result = evaluate_retrieval(
-        RetrievalCase("q0", "unanswerable", ("noise",), (), 4.0), k=1
-    )
+    result = evaluate_retrieval(RetrievalCase("q0", "unanswerable", ("noise",), (), 4.0), k=1)
 
     assert result.is_scorable is False
     assert result.hit_at_k is None
@@ -102,3 +100,9 @@ def test_paired_bootstrap_inputs_reject_unpaired_questions() -> None:
 
     with pytest.raises(ValueError, match="same scorable questions"):
         paired_bootstrap_inputs(left, right)
+
+
+def test_aggregation_rejects_duplicate_question_ids() -> None:
+    case = RetrievalCase("q1", "fact", (), ("a",), 1)
+    with pytest.raises(ValueError, match="question IDs"):
+        aggregate_retrieval((case, case), k=1)

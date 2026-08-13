@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
+
+import yaml
 
 from ragbench.core.hashing import canonical_json_hash
-from ragbench.experiments.planner import generate_core_retrieval_configs
+from ragbench.experiments.planner import CoreSnapshotBinding, generate_core_retrieval_configs
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -16,6 +19,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus-snapshot-id", required=True)
     parser.add_argument("--question-snapshot-id", required=True)
     parser.add_argument("--code-commit", required=True)
+    parser.add_argument("--snapshot-inventory", type=Path, required=True)
     parser.add_argument("--random-seed", type=int, default=17)
     parser.add_argument(
         "--execute",
@@ -27,11 +31,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    raw_inventory = yaml.safe_load(args.snapshot_inventory.read_text(encoding="utf-8"))
+    if not isinstance(raw_inventory, dict) or not isinstance(raw_inventory.get("bindings"), list):
+        raise SystemExit("snapshot inventory must contain a bindings list")
+    bindings = tuple(CoreSnapshotBinding(**row) for row in raw_inventory["bindings"])
     configs = generate_core_retrieval_configs(
         corpus_snapshot_id=args.corpus_snapshot_id,
         question_snapshot_id=args.question_snapshot_id,
         code_commit=args.code_commit,
         random_seed=args.random_seed,
+        snapshot_bindings=bindings,
     )
     if args.execute:
         raise SystemExit(

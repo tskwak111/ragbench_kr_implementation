@@ -155,6 +155,9 @@ def _aggregate(rows: Sequence[RetrievalMetric]) -> RetrievalAggregate:
 
 def aggregate_retrieval(cases: Sequence[RetrievalCase], *, k: int) -> RetrievalEvaluation:
     """Return overall/per-type aggregates and deterministic raw bootstrap observations."""
+    identifiers = [case.question_id for case in cases]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("retrieval case question IDs must be unique")
     rows = tuple(evaluate_retrieval(case, k=k) for case in cases)
     grouped: dict[str, list[RetrievalMetric]] = defaultdict(list)
     for row in rows:
@@ -184,6 +187,8 @@ def paired_bootstrap_inputs(
     left: RetrievalEvaluation, right: RetrievalEvaluation
 ) -> tuple[PairedBootstrapInput, ...]:
     """Align two systems' raw observations without computing or claiming an interval."""
+    if left.k != right.k:
+        raise ValueError("paired bootstrap requires the same metric K")
     left_by_id = {row.question_id: row for row in left.bootstrap_inputs}
     right_by_id = {row.question_id: row for row in right.bootstrap_inputs}
     if left_by_id.keys() != right_by_id.keys():

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from time import perf_counter
 from typing import Literal, Protocol
 
+from ragbench.benchmark.splits import SnapshotName, SplitSnapshot
 from ragbench.core.hashing import canonical_json_hash
 from ragbench.evaluation.retrieval import RetrievalCase, RetrievalEvaluation, aggregate_retrieval
-from ragbench.experiments.config import RetrievalExperimentConfig
+from ragbench.experiments.config import RetrievalExperimentConfig, RetrieverName, RRFConfig
 from ragbench.retrieval.base import Retriever, SearchFilter, SearchHit
+
+_DEV_CAPABILITY = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +51,23 @@ class ScreeningQuestionSnapshot:
             raise ValueError("question snapshot identity is invalid")
         if len({question.question_id for question in self.questions}) != len(self.questions):
             raise ValueError("question IDs must be unique")
-        if self.content_hash != canonical_json_hash(self.questions):
+        if self.content_hash != canonical_json_hash(
+            {"split": self.split, "questions": self.questions}
+        ):
             raise ValueError("question snapshot content hash mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class DevelopmentAuthorization:
+    snapshot_id: str
+    membership_hash: str
+    _capability: object
+
+
+def authorize_development_snapshot(snapshot: SplitSnapshot) -> DevelopmentAuthorization:
+    if snapshot.name is not SnapshotName.DEV_AUTO:
+        raise PermissionError("retrieval screening requires a Task 12 dev_auto snapshot")
+    return DevelopmentAuthorization(snapshot.snapshot_id, snapshot.membership_hash, _DEV_CAPABILITY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +84,19 @@ class SnapshotInventory:
     parse: SnapshotBinding
     chunk: SnapshotBinding
     embedding: SnapshotBinding
+
+
+@dataclass(frozen=True, slots=True)
+class BoundRetriever:
+    """Runtime retriever with the exact semantic identity promised by its config."""
+
+    name: RetrieverName
+    retriever: Retriever
+    rrf: RRFConfig | None
+
+    def __post_init__(self) -> None:
+        if (self.name == "hybrid") != (self.rrf is not None):
+            raise ValueError("RRF parameters are required only for a hybrid binding")
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +193,93 @@ class MemoryScreeningStore:
             raise KeyError(f"unknown screening run: {run_id}") from None
 
 
+class FileScreeningStore(MemoryScreeningStore):
+    """Durable local checkpoint store using atomic per-run JSON replacement."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self._root = root
+        root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, run_id: str) -> Path:
+        if len(run_id) != 64 or any(character not in "0123456789abcdef" for character in run_id):
+            raise ValueError("run ID must be a SHA-256 digest")
+        return self._root / f"{run_id}.json"
+
+    def _load(self, run_id: str) -> ScreeningRunRecord | None:
+        path = self._path(run_id)
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        record = ScreeningRunRecord(
+            run_id=raw["run_id"],
+            config_hash=raw["config_hash"],
+            question_snapshot_hash=raw["question_snapshot_hash"],
+            status=raw["status"],
+            completed_question_ids=set(raw["completed_question_ids"]),
+            hits=[PersistedRankedHit(**hit) for hit in raw["hits"]],
+            latencies_ms={key: float(value) for key, value in raw["latencies_ms"].items()},
+        )
+        if record.run_id != run_id:
+            raise ValueError("checkpoint run identity mismatch")
+        return record
+
+    def _flush(self, record: ScreeningRunRecord) -> None:
+        payload = {
+            "run_id": record.run_id,
+            "config_hash": record.config_hash,
+            "question_snapshot_hash": record.question_snapshot_hash,
+            "status": record.status,
+            "completed_question_ids": sorted(record.completed_question_ids),
+            "hits": [asdict(hit) for hit in record.hits],
+            "latencies_ms": record.latencies_ms,
+        }
+        path = self._path(record.run_id)
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, allow_nan=False, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+
+    def begin(self, record: ScreeningRunRecord) -> ScreeningRunRecord:
+        loaded = self._load(record.run_id)
+        if loaded is not None:
+            self._runs[record.run_id] = loaded
+        resolved = super().begin(record)
+        self._flush(resolved)
+        return resolved
+
+    def persist_question(
+        self,
+        run_id: str,
+        question_id: str,
+        hits: Sequence[PersistedRankedHit],
+        latency_ms: float,
+    ) -> None:
+        super().persist_question(run_id, question_id, hits, latency_ms)
+        self._flush(super().get(run_id))
+
+    def mark_interrupted(self, run_id: str) -> None:
+        super().mark_interrupted(run_id)
+        self._flush(super().get(run_id))
+
+    def finish(self, run_id: str, evaluation: RetrievalEvaluation) -> None:
+        super().finish(run_id, evaluation)
+        self._flush(super().get(run_id))
+
+    def get(self, run_id: str) -> ScreeningRunRecord:
+        loaded = self._load(run_id)
+        if loaded is not None:
+            self._runs[run_id] = loaded
+        return super().get(run_id)
+
+
 @dataclass(frozen=True, slots=True)
 class ScreeningResult:
     run_id: str
     evaluation: RetrievalEvaluation
+    selection_evaluation: RetrievalEvaluation
 
 
 class RetrievalScreenRunner:
@@ -173,10 +290,12 @@ class RetrievalScreenRunner:
         *,
         store: ScreeningStore,
         inventory: SnapshotInventory,
+        development_authorization: DevelopmentAuthorization,
         clock: Callable[[], float] = perf_counter,
     ) -> None:
         self._store = store
         self._inventory = inventory
+        self._development_authorization = development_authorization
         self._clock = clock
 
     def run_identity(
@@ -196,6 +315,15 @@ class RetrievalScreenRunner:
     ) -> None:
         if questions.split != "dev_auto":
             raise PermissionError("normal retrieval screening permits only the dev_auto split")
+        authorization = self._development_authorization
+        if authorization._capability is not _DEV_CAPABILITY:
+            raise PermissionError("invalid Task 12 development snapshot authorization")
+        if (
+            authorization.snapshot_id != questions.snapshot_id
+            or authorization.membership_hash
+            != canonical_json_hash(tuple(sorted(q.question_id for q in questions.questions)))
+        ):
+            raise PermissionError("question content is not bound to the authorized dev snapshot")
         if not questions.complete:
             raise ValueError("question snapshot is incomplete")
         if questions.snapshot_id != config.question_snapshot_id:
@@ -222,7 +350,10 @@ class RetrievalScreenRunner:
 
     @staticmethod
     def _persistable_hits(
-        question_id: str, hits: Sequence[SearchHit], top_k: int
+        question_id: str,
+        hits: Sequence[SearchHit],
+        top_k: int,
+        retriever_name: RetrieverName,
     ) -> tuple[PersistedRankedHit, ...]:
         if len(hits) > top_k:
             raise ValueError("retriever returned more than top_k hits")
@@ -232,6 +363,22 @@ class RetrievalScreenRunner:
             raise ValueError("retriever returned an invalid ranking")
         if any(not math.isfinite(hit.score) for hit in hits):
             raise ValueError("retriever returned a non-finite score")
+        expected_label = "hybrid-rrf" if retriever_name == "hybrid" else retriever_name
+        if any(hit.retriever != expected_label for hit in hits):
+            raise ValueError("hit retriever identity does not match the bound retriever")
+        if retriever_name == "hybrid":
+            for hit in hits:
+                evidence = hit.evidence
+                if (
+                    evidence is None
+                    or evidence.fused_score != hit.score
+                    or (evidence.dense_rank is None and evidence.sparse_rank is None)
+                    or any(
+                        value is not None and not math.isfinite(value)
+                        for value in (evidence.dense_score, evidence.sparse_score)
+                    )
+                ):
+                    raise ValueError("hybrid hit component evidence is invalid")
         output: list[PersistedRankedHit] = []
         for hit in hits:
             evidence = hit.evidence
@@ -255,9 +402,13 @@ class RetrievalScreenRunner:
         self,
         config: RetrievalExperimentConfig,
         questions: ScreeningQuestionSnapshot,
-        retriever: Retriever,
+        binding: BoundRetriever,
     ) -> ScreeningResult:
         self._validate_inputs(config, questions)
+        if binding.name != config.retriever:
+            raise ValueError("retriever binding does not match experiment config")
+        if binding.rrf != config.rrf:
+            raise ValueError("RRF binding does not match experiment config")
         run_id = self.run_identity(config, questions)
         run = self._store.begin(
             ScreeningRunRecord(run_id, config.semantic_hash, questions.content_hash)
@@ -270,42 +421,44 @@ class RetrievalScreenRunner:
         )
         by_id = {question.question_id: question for question in questions.questions}
         try:
+            retrieval_k = max(config.top_k, 5)
             for question in questions.questions:
                 if question.question_id in run.completed_question_ids:
                     continue
                 started = self._clock()
-                hits = await retriever.search(
-                    question.prompt, top_k=config.top_k, filter=search_filter
+                hits = await binding.retriever.search(
+                    question.prompt, top_k=retrieval_k, filter=search_filter
                 )
                 elapsed_ms = max(0.0, (self._clock() - started) * 1000)
-                persisted = self._persistable_hits(question.question_id, hits, config.top_k)
-                self._store.persist_question(
-                    run_id, question.question_id, persisted, elapsed_ms
+                persisted = self._persistable_hits(
+                    question.question_id, hits, retrieval_k, config.retriever
                 )
+                self._store.persist_question(run_id, question.question_id, persisted, elapsed_ms)
         except BaseException:
             self._store.mark_interrupted(run_id)
             raise
 
+        run = self._store.get(run_id)
         rankings: dict[str, list[PersistedRankedHit]] = {question_id: [] for question_id in by_id}
         for hit in run.hits:
             rankings[hit.question_id].append(hit)
+        cases = tuple(
+            RetrievalCase(
+                question.question_id,
+                question.question_type,
+                tuple(
+                    hit.chunk_id
+                    for hit in sorted(rankings[question.question_id], key=lambda row: row.rank)
+                ),
+                question.evidence_chunk_ids,
+                run.latencies_ms[question.question_id],
+            )
+            for question in questions.questions
+        )
         evaluation = aggregate_retrieval(
-            tuple(
-                RetrievalCase(
-                    question.question_id,
-                    question.question_type,
-                    tuple(
-                        hit.chunk_id
-                        for hit in sorted(
-                            rankings[question.question_id], key=lambda row: row.rank
-                        )
-                    ),
-                    question.evidence_chunk_ids,
-                    run.latencies_ms[question.question_id],
-                )
-                for question in questions.questions
-            ),
+            cases,
             k=config.top_k,
         )
+        selection_evaluation = aggregate_retrieval(cases, k=5)
         self._store.finish(run_id, evaluation)
-        return ScreeningResult(run_id, evaluation)
+        return ScreeningResult(run_id, evaluation, selection_evaluation)

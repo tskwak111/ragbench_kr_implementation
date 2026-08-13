@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from ragbench.experiments.config import RetrievalExperimentConfig
-from ragbench.experiments.planner import generate_core_retrieval_configs, require_unique_configs
+from ragbench.experiments.planner import (
+    CHUNK_STRATEGIES,
+    CoreSnapshotBinding,
+    generate_core_retrieval_configs,
+    require_unique_configs,
+)
 
 
 def _payload() -> dict[str, object]:
@@ -25,6 +30,20 @@ def _payload() -> dict[str, object]:
         "code_commit": "0bce46e",
         "metric_version": "retrieval-v1",
     }
+
+
+def _bindings() -> tuple[CoreSnapshotBinding, ...]:
+    return tuple(
+        CoreSnapshotBinding(
+            parse_mode=mode,
+            parse_snapshot_id=f"parse-{mode}",
+            chunk_strategy=strategy,
+            chunk_snapshot_id=f"chunk-{mode}-{strategy}",
+            embedding_snapshot_id=f"00000000-0000-0000-{mode_index:04d}-{index:012d}",
+        )
+        for mode_index, mode in enumerate(("standard", "enhanced"), start=1)
+        for index, strategy in enumerate(CHUNK_STRATEGIES, start=1)
+    )
 
 
 def test_yaml_round_trip_is_strict_immutable_and_semantically_hashed(tmp_path: Path) -> None:
@@ -72,12 +91,28 @@ def test_yaml_export_refuses_to_overwrite_an_existing_config(tmp_path: Path) -> 
     assert path.read_text(encoding="utf-8") == "owner: user\n"
 
 
+def test_yaml_rejects_duplicate_keys_and_normalizes_identity_whitespace(tmp_path: Path) -> None:
+    config = RetrievalExperimentConfig.model_validate(
+        {**_payload(), "corpus_snapshot_id": " corpus-a "}
+    )
+    assert config.corpus_snapshot_id == "corpus-a"
+
+    path = tmp_path / "duplicate.yaml"
+    path.write_text(
+        "schema_version: retrieval-screen-v1\nschema_version: retrieval-screen-v1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate YAML key"):
+        RetrievalExperimentConfig.from_yaml(path)
+
+
 def test_core_planner_generates_exactly_126_unique_configs() -> None:
     configs = generate_core_retrieval_configs(
         corpus_snapshot_id="corpus-a",
         question_snapshot_id="dev-a",
         code_commit="0bce46e",
         random_seed=17,
+        snapshot_bindings=_bindings(),
     )
 
     assert len(configs) == 2 * 7 * 3 * 3 == 126
