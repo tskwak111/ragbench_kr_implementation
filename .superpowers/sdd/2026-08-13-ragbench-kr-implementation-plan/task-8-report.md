@@ -358,3 +358,35 @@ Success: no issues found in 32 source files  # strict mypy
 Alembic upgrade through revision 0004 and downgrade `0004:0003` both generated offline SQL
 successfully. No live provider or PostgreSQL operation was executed locally; the 100-row,
 50-query, truncated-candidate parity and migration behavior remain configured-DB CI assertions.
+
+## Fix round 3 — bind legacy retrieval display IDs to preserved evidence
+
+The exclusive retrieval-evidence CHECK previously proved only that legacy mode had a non-null
+`legacy_chunk_id` and no embedding snapshot. It did not prove the retrieval-facing string
+`chunk_id` named that same legacy chunk. The ORM and revision-0004 migration now require the legacy
+branch to satisfy `chunk_id = legacy_chunk_id::text`; the artifact branch remains unchanged.
+
+The upgrade already backfills `legacy_chunk_id` from the original UUID `chunk_id` before converting
+the display column to text and creating the CHECK, so existing rows satisfy the stronger invariant.
+Downgrade continues to restore `chunk_id` from `legacy_chunk_id::text`, matching the constraint's
+evidence source.
+
+TDD RED:
+
+```text
+uv --cache-dir /private/tmp/finproof-uv-cache run pytest \
+  tests/unit/db/test_dense_migration.py -q
+
+2 failed, 2 passed
+- ORM CHECK omitted chunk_id = legacy_chunk_id::text
+- generated upgrade SQL omitted the same identity binding
+```
+
+Focused GREEN:
+
+```text
+....                                                                     [100%]
+4 passed in 0.86s
+```
+
+No live provider or PostgreSQL call was made in this round.

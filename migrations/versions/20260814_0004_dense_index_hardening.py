@@ -156,7 +156,8 @@ $migration$;
     op.create_check_constraint(
         "retrieval_result_exactly_one_evidence_mode",
         "retrieval_result",
-        "((legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL) OR "
+        "((legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL "
+        "AND chunk_id = legacy_chunk_id::text) OR "
         "(legacy_chunk_id IS NULL AND embedding_snapshot_id IS NOT NULL))",
     )
 

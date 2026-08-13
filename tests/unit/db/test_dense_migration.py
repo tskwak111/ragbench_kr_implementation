@@ -58,6 +58,19 @@ def test_retrieval_result_model_enforces_exactly_one_evidence_mode() -> None:
     assert columns.embedding_snapshot_id.nullable is True
     assert any(
         "legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL" in check
+        and "chunk_id = legacy_chunk_id::text" in check
         and "legacy_chunk_id IS NULL AND embedding_snapshot_id IS NOT NULL" in check
         for check in checks
+    )
+
+
+def test_upgrade_binds_legacy_display_id_to_preserved_chunk_uuid() -> None:
+    """Catch valid legacy foreign-key evidence paired with an unrelated display chunk ID."""
+    sql = _migration_sql("upgrade")
+
+    check = "chunk_id = legacy_chunk_id::text"
+    assert check in sql
+    assert sql.index("UPDATE retrieval_result SET legacy_chunk_id = chunk_id") < sql.index(check)
+    assert "UPDATE retrieval_result SET chunk_id = legacy_chunk_id::text" in _migration_sql(
+        "downgrade"
     )

@@ -280,7 +280,8 @@ class RetrievalResult(Base):
     __table_args__ = (
         CheckConstraint("rank > 0", name="retrieval_rank_positive"),
         CheckConstraint(
-            "((legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL) OR "
+            "((legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL "
+            "AND chunk_id = legacy_chunk_id::text) OR "
             "(legacy_chunk_id IS NULL AND embedding_snapshot_id IS NOT NULL))",
             name="retrieval_result_exactly_one_evidence_mode",
         ),
