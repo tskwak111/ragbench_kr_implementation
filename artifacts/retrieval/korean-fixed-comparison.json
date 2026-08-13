@@ -1,0 +1,27 @@
+{
+  "fixture_scope": "synthetic-public-safe-offline",
+  "description": "Provider-free deterministic fixture; not a real-corpus quality claim.",
+  "search_filter": {
+    "corpus_snapshot_id": "fixture-corpus-v1",
+    "parse_snapshot_id": "fixture-parse-v1",
+    "chunk_strategy": "fixture-fixed",
+    "embedding_snapshot_id": "fixture-embedding-v1",
+    "document_ids": []
+  },
+  "documents": [
+    {"chunk_id": "fact-capital", "document_id": "doc-fact", "content": "대한민국의 수도는 서울이다.", "vector": [1.0, 0.0, 0.0]},
+    {"chunk_id": "numeric-revenue", "document_id": "doc-numeric", "content": "2025년 매출은 1,234.50억 원이다.", "vector": [0.0, 1.0, 0.0]},
+    {"chunk_id": "paraphrase-growth", "document_id": "doc-growth", "content": "영업 이익이 전년보다 크게 증가했다.", "vector": [0.0, 0.0, 1.0]},
+    {"chunk_id": "distractor", "document_id": "doc-other", "content": "부산의 인구 통계와 2024년 비용을 정리했다.", "vector": [-1.0, -1.0, -1.0]}
+  ],
+  "queries": [
+    {"type": "fact", "query": "한국 수도는 어디인가", "vector": [1.0, 0.1, 0.0]},
+    {"type": "numeric", "query": "2025 매출 1,234.50", "vector": [0.1, 1.0, 0.0]},
+    {"type": "paraphrase", "query": "본업에서 번 돈이 작년보다 늘었나", "vector": [0.0, 0.1, 1.0]}
+  ],
+  "expected": [
+    {"type": "fact", "query": "한국 수도는 어디인가", "dense": ["fact-capital", "numeric-revenue", "paraphrase-growth"], "bm25": ["fact-capital"], "hybrid": ["fact-capital", "numeric-revenue", "paraphrase-growth"]},
+    {"type": "numeric", "query": "2025 매출 1,234.50", "dense": ["numeric-revenue", "fact-capital", "paraphrase-growth"], "bm25": ["numeric-revenue"], "hybrid": ["numeric-revenue", "fact-capital", "paraphrase-growth"]},
+    {"type": "paraphrase", "query": "본업에서 번 돈이 작년보다 늘었나", "dense": ["paraphrase-growth", "numeric-revenue", "fact-capital"], "bm25": [], "hybrid": ["paraphrase-growth", "numeric-revenue", "fact-capital"]}
+  ]
+}
