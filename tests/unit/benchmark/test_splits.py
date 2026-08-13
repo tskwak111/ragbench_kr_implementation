@@ -19,6 +19,7 @@ from ragbench.benchmark.splits import (
     BenchmarkItem,
     GoldAccessError,
     GoldItem,
+    GoldMetadata,
     ImmutableSnapshotError,
     ReviewCandidate,
     ReviewDecision,
@@ -34,6 +35,7 @@ from ragbench.benchmark.splits import (
     seal_gold,
 )
 from ragbench.cli import build_app
+from ragbench.core.hashing import canonical_json_hash
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TEST_HOOKS = runpy.run_path(PROJECT_ROOT / "tests" / "conftest.py")
@@ -211,8 +213,36 @@ def test_split_components_prevent_document_family_and_paraphrase_leakage() -> No
     assert assignment["b1"] == assignment["b2"]
     assert all(snapshot.version == "v2026-08-14" for snapshot in snapshots.values())
     assert len({snapshot.snapshot_id for snapshot in snapshots.values()}) == 3
+    assert all("item_ids" not in snapshot.model_dump() for snapshot in snapshots.values())
+    assert all(
+        snapshot.model_dump()["item_count"] == len(snapshot.item_ids)
+        for snapshot in snapshots.values()
+    )
+    assert all(
+        len(str(snapshot.model_dump()["membership_hash"])) == 64
+        for snapshot in snapshots.values()
+    )
     with pytest.raises(ValidationError, match="frozen"):
         snapshots[SnapshotName.DEV_AUTO].seed = 20  # type: ignore[misc]
+
+
+def test_split_normalizes_document_ids_before_leakage_grouping() -> None:
+    """Catch whitespace variants of one document being assigned across split boundaries."""
+    items = list(_benchmark_items())
+    first_payload = items[0].model_dump()
+    first_payload["document_ids"] = (" doc-shared ",)
+    second_payload = items[3].model_dump()
+    second_payload["document_ids"] = ("doc-shared",)
+    first = BenchmarkItem.model_validate(first_payload)
+    second = BenchmarkItem.model_validate(second_payload)
+    items[0], items[3] = first, second
+
+    snapshots = build_split_snapshots(items, version="v-normalized", seed=31)
+    assignment = {
+        item_id: name for name, snapshot in snapshots.items() for item_id in snapshot.item_ids
+    }
+
+    assert assignment[first.item_id] == assignment[second.item_id]
 
 
 def _review(
@@ -284,6 +314,19 @@ def test_review_records_fail_closed_and_disagreement_requires_written_adjudicati
     assert result.reviewer_decision is ReviewDecision.REJECT
     assert result.reviewer_id == "reviewer-c"
 
+    corrected = adjudicate_reviews(
+        left,
+        right,
+        adjudicator_id="reviewer-c",
+        notes="원문 대조 후 답과 근거를 정정",
+        decision=ReviewDecision.CORRECT,
+        corrected_answer="정정 답변",
+        corrected_evidence="정정 근거",
+    )
+    assert corrected.reviewer_decision is ReviewDecision.CORRECT
+    assert corrected.corrected_answer == "정정 답변"
+    assert corrected.corrected_evidence == "정정 근거"
+
 
 def _gold_items(count: int) -> tuple[GoldItem, ...]:
     return tuple(
@@ -297,6 +340,17 @@ def _gold_items(count: int) -> tuple[GoldItem, ...]:
             answerable=True,
         )
         for index in range(count)
+    )
+
+
+def _metadata_snapshot_id(metadata: GoldMetadata, content_hash: str) -> str:
+    return canonical_json_hash(
+        {
+            "version": metadata.version,
+            "content_sha256": content_hash,
+            "item_count": metadata.item_count,
+            "scope_status": metadata.scope_status,
+        }
     )
 
 
@@ -360,7 +414,7 @@ def test_reduced_gold_requires_exact_150_item_scope_floor(tmp_path: Path) -> Non
 
 
 def test_gold_loading_needs_environment_and_explicit_command_and_never_previews(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Catch ALLOW_GOLD_ACCESS alone making sealed answers visible to normal code paths."""
     items = _gold_items(150)
@@ -372,31 +426,24 @@ def test_gold_loading_needs_environment_and_explicit_command_and_never_previews(
         quality_threshold_met=False,
     )
 
+    monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")
     with pytest.raises(GoldAccessError, match="explicit gold command"):
-        authorize_gold_access(
-            command="evaluate-gold",
-            explicit=False,
-            environment={"ALLOW_GOLD_ACCESS": "1"},
-        )
+        authorize_gold_access(command="evaluate-gold", explicit=False)
+    monkeypatch.delenv("ALLOW_GOLD_ACCESS")
     with pytest.raises(GoldAccessError, match="ALLOW_GOLD_ACCESS=1"):
-        authorize_gold_access(command="evaluate-gold", explicit=True, environment={})
+        authorize_gold_access(command="evaluate-gold", explicit=True)
+    monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")
     with pytest.raises(GoldAccessError, match="not permitted"):
-        authorize_gold_access(
-            command="preview-gold",
-            explicit=True,
-            environment={"ALLOW_GOLD_ACCESS": "1"},
-        )
+        authorize_gold_access(command="preview-gold", explicit=True)
 
-    authorization = authorize_gold_access(
-        command="evaluate-gold",
-        explicit=True,
-        environment={"ALLOW_GOLD_ACCESS": "1"},
-    )
+    authorization = authorize_gold_access(command="evaluate-gold", explicit=True)
     loaded = load_sealed_gold(gold_path, metadata=metadata, authorization=authorization)
     assert loaded == items
 
 
-def test_gold_loader_rejects_symlinks_tampering_and_unsafe_permissions(tmp_path: Path) -> None:
+def test_gold_loader_rejects_symlinks_tampering_and_unsafe_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Catch no-follow, integrity, or confidentiality checks being weakened after sealing."""
     gold_path = tmp_path / "gold.jsonl"
     metadata = seal_gold(
@@ -405,11 +452,8 @@ def test_gold_loader_rejects_symlinks_tampering_and_unsafe_permissions(tmp_path:
         version="v1",
         quality_threshold_met=False,
     )
-    authorization = authorize_gold_access(
-        command="evaluate-gold",
-        explicit=True,
-        environment={"ALLOW_GOLD_ACCESS": "1"},
-    )
+    monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")
+    authorization = authorize_gold_access(command="evaluate-gold", explicit=True)
     alias_dir = tmp_path / "alias"
     alias_dir.mkdir()
     alias = alias_dir / "gold.jsonl"
@@ -426,6 +470,78 @@ def test_gold_loader_rejects_symlinks_tampering_and_unsafe_permissions(tmp_path:
     gold_path.chmod(0o600)
     with pytest.raises(ImmutableSnapshotError, match="hash mismatch"):
         load_sealed_gold(gold_path, metadata=metadata, authorization=authorization)
+
+
+def test_gold_loader_revalidates_metadata_identity_and_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch coordinated content-hash metadata edits bypassing the sealed snapshot identity."""
+    gold_path = tmp_path / "gold.jsonl"
+    metadata = seal_gold(
+        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
+    )
+    raw = gold_path.read_text(encoding="utf-8").replace("합성 답변 0", "변조된 답변", 1)
+    gold_path.write_text(raw, encoding="utf-8")
+    gold_path.chmod(0o600)
+    forged = metadata.model_copy(
+        update={"content_sha256": hashlib.sha256(raw.encode()).hexdigest()}
+    )
+    monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")
+    authorization = authorize_gold_access(command="evaluate-gold", explicit=True)
+
+    with pytest.raises(ImmutableSnapshotError, match="metadata identity"):
+        load_sealed_gold(gold_path, metadata=forged, authorization=authorization)
+
+    invalid_scope = metadata.model_copy(update={"item_count": 151})
+    with pytest.raises(ImmutableSnapshotError, match="scope metadata"):
+        load_sealed_gold(gold_path, metadata=invalid_scope, authorization=authorization)
+
+
+def test_invalid_gold_schema_does_not_chain_restricted_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch validation tracebacks retaining restricted question or item input."""
+    gold_path = tmp_path / "gold.jsonl"
+    metadata = seal_gold(
+        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
+    )
+    malformed = gold_path.read_text(encoding="utf-8").replace(
+        '"item_id":"gold-000"', '"item_id":123', 1
+    )
+    gold_path.write_text(malformed, encoding="utf-8")
+    gold_path.chmod(0o600)
+    forged_hash = hashlib.sha256(malformed.encode()).hexdigest()
+    forged = metadata.model_copy(
+        update={
+            "content_sha256": forged_hash,
+            "snapshot_id": _metadata_snapshot_id(metadata, forged_hash),
+        }
+    )
+    monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")
+    authorization = authorize_gold_access(command="evaluate-gold", explicit=True)
+
+    with pytest.raises(ImmutableSnapshotError) as raised:
+        load_sealed_gold(gold_path, metadata=forged, authorization=authorization)
+
+    assert raised.value.__cause__ is None
+    assert "gold-000" not in str(raised.value)
+    assert "봉인 합성 질문" not in str(raised.value)
+
+
+def test_gold_seal_rejects_symlink_in_any_parent_component(tmp_path: Path) -> None:
+    """Catch an intermediate symlink redirecting a supposedly no-follow restricted write."""
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+
+    with pytest.raises(ImmutableSnapshotError, match="safe directory"):
+        seal_gold(
+            _gold_items(150),
+            alias / "gold.jsonl",
+            version="v1",
+            quality_threshold_met=False,
+        )
 
 
 def test_gold_item_ids_are_unique_before_sealing(tmp_path: Path) -> None:

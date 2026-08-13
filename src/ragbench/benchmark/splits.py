@@ -9,7 +9,7 @@ import random
 import secrets
 import stat
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -84,9 +84,10 @@ class ReviewCandidate(_FrozenModel):
     @field_validator("document_ids")
     @classmethod
     def _valid_documents(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not item.strip() for item in value) or len(value) != len(set(value)):
+        normalized = tuple(item.strip() for item in value)
+        if any(not item for item in normalized) or len(normalized) != len(set(normalized)):
             raise ValueError("document IDs must be nonblank and unique")
-        return value
+        return normalized
 
 
 class ReviewQueueItem(_FrozenModel):
@@ -120,9 +121,10 @@ class BenchmarkItem(_FrozenModel):
     @field_validator("document_ids")
     @classmethod
     def _benchmark_documents_valid(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not item.strip() for item in value) or len(value) != len(set(value)):
+        normalized = tuple(item.strip() for item in value)
+        if any(not item for item in normalized) or len(normalized) != len(set(normalized)):
             raise ValueError("document IDs must be nonblank and unique")
-        return value
+        return normalized
 
 
 class SplitSnapshot(_FrozenModel):
@@ -130,7 +132,9 @@ class SplitSnapshot(_FrozenModel):
     version: str = Field(min_length=1)
     snapshot_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     seed: int
-    item_ids: tuple[str, ...]
+    item_count: int = Field(gt=0)
+    membership_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    item_ids: tuple[str, ...] = Field(exclude=True)
 
 
 class ReviewRecord(_FrozenModel):
@@ -339,6 +343,8 @@ def build_split_snapshots(
             version=version,
             snapshot_id=snapshot_id,
             seed=seed,
+            item_count=len(item_ids),
+            membership_hash=canonical_json_hash(item_ids),
             item_ids=item_ids,
         )
     return snapshots
@@ -375,6 +381,8 @@ def adjudicate_reviews(
     adjudicator_id: str,
     notes: str,
     decision: ReviewDecision | None = None,
+    corrected_answer: str | None = None,
+    corrected_evidence: str | None = None,
     timestamp: datetime | None = None,
 ) -> ReviewRecord:
     """Resolve paired review decisions while preserving a written rule application."""
@@ -397,15 +405,16 @@ def adjudicate_reviews(
         notes=notes.strip(),
         timestamp=timestamp or datetime.now(UTC),
     )
+    if corrected_answer is not None:
+        payload["corrected_answer"] = corrected_answer
+    if corrected_evidence is not None:
+        payload["corrected_evidence"] = corrected_evidence
     return ReviewRecord.model_validate(payload)
 
 
-def authorize_gold_access(
-    *, command: str, explicit: bool, environment: Mapping[str, str] | None = None
-) -> GoldAuthorization:
+def authorize_gold_access(*, command: str, explicit: bool) -> GoldAuthorization:
     """Issue an in-process capability only when both independent gold gates are open."""
-    active_environment = os.environ if environment is None else environment
-    if active_environment.get("ALLOW_GOLD_ACCESS") != "1":
+    if os.environ.get("ALLOW_GOLD_ACCESS") != "1":
         raise GoldAccessError("gold access requires ALLOW_GOLD_ACCESS=1")
     if not explicit:
         raise GoldAccessError("gold access requires an explicit gold command or flag")
@@ -494,6 +503,19 @@ def load_sealed_gold(
         raise GoldAccessError("requested gold command is not permitted")
     if path.name != metadata.file_name:
         raise ImmutableSnapshotError("sealed gold file name does not match metadata")
+    expected_count = 300 if metadata.scope_status == "full" else 150
+    if metadata.item_count != expected_count:
+        raise ImmutableSnapshotError("sealed gold scope metadata is invalid")
+    expected_snapshot_id = canonical_json_hash(
+        {
+            "version": metadata.version,
+            "content_sha256": metadata.content_sha256,
+            "item_count": metadata.item_count,
+            "scope_status": metadata.scope_status,
+        }
+    )
+    if metadata.snapshot_id != expected_snapshot_id:
+        raise ImmutableSnapshotError("sealed gold metadata identity is invalid")
     payload = _read_private_regular(path)
     if hashlib.sha256(payload).hexdigest() != metadata.content_sha256:
         raise ImmutableSnapshotError("sealed gold hash mismatch")
@@ -503,8 +525,8 @@ def load_sealed_gold(
             for line in payload.splitlines()
             if line.strip()
         )
-    except (ValueError, UnicodeError) as error:
-        raise ImmutableSnapshotError("sealed gold payload is invalid") from error
+    except (ValueError, UnicodeError):
+        raise ImmutableSnapshotError("sealed gold payload is invalid") from None
     if len(parsed) != metadata.item_count:
         raise ImmutableSnapshotError("sealed gold item count mismatch")
     return parsed
@@ -513,14 +535,23 @@ def load_sealed_gold(
 def _open_private_parent(path: Path) -> int:
     if not path.name or path.name in {".", ".."}:
         raise ImmutableSnapshotError("sealed gold path requires a direct file name")
-    flags = os.O_RDONLY | os.O_DIRECTORY
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
         raise ImmutableSnapshotError("safe no-follow file operations are unavailable")
+    absolute_parent = Path(os.path.abspath(path.parent))
+    flags = os.O_RDONLY | os.O_DIRECTORY | no_follow
+    descriptor: int | None = None
     try:
-        descriptor = os.open(path.parent, flags | no_follow)
-    except OSError as error:
-        raise ImmutableSnapshotError("sealed gold parent is not a safe directory") from error
+        descriptor = os.open(os.sep, flags)
+        for component in absolute_parent.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ImmutableSnapshotError("sealed gold parent is not a safe directory") from None
+    assert descriptor is not None
     opened = os.fstat(descriptor)
     if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.geteuid():
         os.close(descriptor)

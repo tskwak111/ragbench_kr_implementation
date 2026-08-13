@@ -60,8 +60,10 @@ shared documents, question families, and paraphrase groups, then assigns whole c
 the operation fails; revise the candidate pool rather than splitting a component.
 
 Persist only the immutable split metadata in normal development storage. Restricted split content
-stays in its licensed private location. Never move a family, paraphrase, or shared-document item to
-another split after snapshot creation; create a new version instead.
+stays in its licensed private location. `SplitSnapshot.model_dump()` excludes member item IDs and
+contains only the split name/version, seed, item count, membership hash, and content-bound snapshot
+ID. Never move a family, paraphrase, or shared-document item to another split after snapshot
+creation; create a new version instead.
 
 ## Quality threshold and sealing
 
