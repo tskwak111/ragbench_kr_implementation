@@ -1,0 +1,23 @@
+schema_version: benchmark-generation-v1
+generation:
+  quotas:
+    fact: 300
+    numeric_table: 300
+    comparison: 250
+    multihop: 250
+    unanswerable: 200
+    complex_summary: 200
+  per_document_cap: 300
+  per_page_cap: 30
+  batch_size: 12
+  source_window_max_chars: 20000
+  max_output_tokens: 8000
+  prompt_version: benchmark-v1
+  normal_completion_floor: 1000
+  emergency_floor: 800
+validation:
+  per_document_cap: 300
+  duplicate_similarity_threshold: 0.92
+  evidence_similarity_threshold: 0.96
+  rejection_sample_limit: 5
+  contamination_terms: []
