@@ -155,3 +155,83 @@ def test_collector_cli_reports_unknown_license_and_rejects_output_redirection(
     monkeypatch.setattr(sys, "argv", arguments)
     assert module.main() == 1
     assert not redirected.exists()
+
+
+def test_metadata_validation_failure_leaves_no_outputs_and_retry_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    raw.mkdir()
+    private.mkdir()
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    arguments = _arguments(approved, source, raw, private)
+    arguments[arguments.index("https://example.test/sample.pdf")] = "not-an-http-url"
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    assert module.main() == 1
+    assert not (raw / "sample.pdf").exists()
+    assert not (private / "fragment.yaml").exists()
+    assert not (private / "report.yaml").exists()
+    assert not list(raw.glob(".collect-*.partial"))
+    assert not list(private.glob(".collect-*.partial"))
+
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+    assert module.main() == 0
+
+
+@pytest.mark.parametrize("existing_name", ["fragment.yaml", "report.yaml"])
+def test_preexisting_metadata_output_fails_before_pdf_and_preserves_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_name: str
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    raw.mkdir()
+    private.mkdir()
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    existing = private / existing_name
+    existing.write_text("preserve-me", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 1
+    assert existing.read_text(encoding="utf-8") == "preserve-me"
+    assert not (raw / "sample.pdf").exists()
+    assert not (
+        private / ("report.yaml" if existing_name == "fragment.yaml" else "fragment.yaml")
+    ).exists()
+
+
+@pytest.mark.parametrize("failing_link", [1, 2, 3])
+def test_publish_failures_roll_back_only_this_invocations_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_link: int
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    raw.mkdir()
+    private.mkdir()
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    original_link = module.os.link
+    link_calls = 0
+
+    def fail_after_link(*args: object, **kwargs: object) -> None:
+        nonlocal link_calls
+        link_calls += 1
+        original_link(*args, **kwargs)
+        if link_calls == failing_link:
+            raise OSError("injected publish failure")
+
+    monkeypatch.setattr(module.os, "link", fail_after_link)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 1
+    assert not (raw / "sample.pdf").exists()
+    assert not (private / "fragment.yaml").exists()
+    assert not (private / "report.yaml").exists()
+    assert not list(raw.glob(".collect-*.partial"))
+    assert not list(private.glob(".collect-*.partial"))

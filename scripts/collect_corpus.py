@@ -17,7 +17,6 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pypdf import PdfReader
@@ -145,14 +144,100 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
-def _copy_validate_and_publish(
-    source_fd: int, raw_fd: int, destination_name: str
-) -> tuple[str, int]:
-    """Stage, hash, and parse a source descriptor before atomically linking it into raw_fd."""
+class _StagedFile:
+    """A fsynced temporary inode, identified so rollback cannot remove another writer's file."""
+
+    def __init__(self, *, name: str, device: int, inode: int) -> None:
+        self.name = name
+        self.device = device
+        self.inode = inode
+
+
+def _new_temporary_name() -> str:
+    return f".collect-{next(tempfile._get_candidate_names())}.partial"  # type: ignore[attr-defined]
+
+
+def _stage_bytes(directory_fd: int, payload: bytes) -> _StagedFile:
+    """Create and fsync an unpredictable temporary regular file in directory_fd."""
+    name = _new_temporary_name()
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        return _StagedFile(name=name, device=metadata.st_dev, inode=metadata.st_ino)
+    except Exception:
+        with suppress(FileNotFoundError):
+            os.unlink(name, dir_fd=directory_fd)
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _cleanup_staged(directory_fd: int, staged: _StagedFile) -> None:
+    """Remove a still-owned staging inode; a replaced temp name is left untouched."""
+    try:
+        metadata = os.stat(staged.name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if metadata.st_dev == staged.device and metadata.st_ino == staged.inode:
+        os.unlink(staged.name, dir_fd=directory_fd)
+
+
+def _preflight_absent(directory_fd: int, names: tuple[str, ...]) -> None:
+    """Reject already-present link targets before publishing any transaction member."""
+    for name in names:
+        try:
+            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise FileExistsError(f"refusing to overwrite existing destination: {name}")
+
+
+def _publish_staged(directory_fd: int, staged: _StagedFile, destination_name: str) -> None:
+    """Publish one staged inode with atomic no-replace link semantics."""
+    try:
+        os.link(
+            staged.name,
+            destination_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        raise FileExistsError(
+            f"refusing to overwrite existing destination: {destination_name}"
+        ) from error
+
+
+def _rollback_owned_link(directory_fd: int, destination_name: str, staged: _StagedFile) -> None:
+    """Unlink only a destination still pointing at this invocation's staged inode."""
+    if _destination_is_owned(directory_fd, destination_name, staged):
+        os.unlink(destination_name, dir_fd=directory_fd)
+
+
+def _destination_is_owned(directory_fd: int, destination_name: str, staged: _StagedFile) -> bool:
+    """Return whether a visible name still refers to this run's temporary inode."""
+    try:
+        metadata = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return metadata.st_dev == staged.device and metadata.st_ino == staged.inode
+
+
+def _stage_pdf(source_fd: int, raw_fd: int) -> tuple[_StagedFile, str, int]:
+    """Stage, hash, and parse source descriptor bytes before publishing any final link."""
     source_stat = os.fstat(source_fd)
     if not stat.S_ISREG(source_stat.st_mode):
         raise ValueError("source must be a regular file")
-    temporary_name = f".collect-{next(tempfile._get_candidate_names())}.partial"  # type: ignore[attr-defined]
+    temporary_name = _new_temporary_name()
     temporary_fd = -1
     try:
         # tempfile provides an unpredictable name; openat keeps it bound to raw_fd.
@@ -175,54 +260,57 @@ def _copy_validate_and_publish(
         os.fsync(temporary_fd)
         with os.fdopen(os.dup(temporary_fd), "rb") as staged:
             page_count = len(PdfReader(staged, strict=True).pages)
-        os.link(
-            temporary_name,
-            destination_name,
-            src_dir_fd=raw_fd,
-            dst_dir_fd=raw_fd,
-            follow_symlinks=False,
+        metadata = os.fstat(temporary_fd)
+        return (
+            _StagedFile(name=temporary_name, device=metadata.st_dev, inode=metadata.st_ino),
+            digest.hexdigest(),
+            page_count,
         )
-        os.fsync(raw_fd)
-        return digest.hexdigest(), page_count
-    except FileExistsError as error:
-        raise FileExistsError(
-            f"refusing to overwrite existing destination: {destination_name}"
-        ) from error
+    except Exception:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=raw_fd)
+        raise
     finally:
         if temporary_fd >= 0:
             os.close(temporary_fd)
-        with suppress(FileNotFoundError):
-            os.unlink(temporary_name, dir_fd=raw_fd)
 
 
-def _write_private_yaml_no_replace(private_fd: int, name: str, content: dict[str, Any]) -> None:
-    temporary_name = f".collect-{next(tempfile._get_candidate_names())}.partial"  # type: ignore[attr-defined]
-    descriptor = -1
+def _copy_validate_and_publish(
+    source_fd: int, raw_fd: int, destination_name: str
+) -> tuple[str, int]:
+    """Compatibility helper for direct callers; transaction-aware ``main`` stages all artifacts."""
+    staged, sha256, page_count = _stage_pdf(source_fd, raw_fd)
     try:
-        descriptor = os.open(
-            temporary_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=private_fd,
-        )
-        payload = yaml.safe_dump(content, allow_unicode=True, sort_keys=False).encode()
-        _write_all(descriptor, payload)
-        os.fsync(descriptor)
-        os.link(
-            temporary_name,
-            name,
-            src_dir_fd=private_fd,
-            dst_dir_fd=private_fd,
-            follow_symlinks=False,
-        )
-        os.fsync(private_fd)
-    except FileExistsError as error:
-        raise FileExistsError(f"refusing to overwrite private output: {name}") from error
+        _preflight_absent(raw_fd, (destination_name,))
+        _publish_staged(raw_fd, staged, destination_name)
+        return sha256, page_count
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        with suppress(FileNotFoundError):
-            os.unlink(temporary_name, dir_fd=private_fd)
+        _cleanup_staged(raw_fd, staged)
+
+
+def _build_record(
+    args: argparse.Namespace, destination: Path, sha256: str, page_count: int
+) -> DocumentRecord:
+    """Validate and construct one record before any transaction member is published."""
+    return DocumentRecord(
+        document_id=args.document_id,
+        title=args.title,
+        organization=args.organization,
+        year=args.year,
+        document_type=args.document_type,
+        language=args.language,
+        sector=args.sector,
+        content_stratum=args.content_stratum,
+        template_family=args.template_family,
+        source_url=args.source_url,
+        downloaded_at=args.downloaded_at,
+        license=args.license,
+        redistribution_status=args.redistribution_status,
+        local_path=destination,
+        sha256=sha256,
+        page_count=page_count,
+        inclusion_rationale=args.inclusion_rationale,
+    )
 
 
 def main() -> int:
@@ -235,6 +323,9 @@ def main() -> int:
             raise ValueError("document-id must be a safe lowercase identifier")
         report_name = _safe_output_name(args.report, args.private_output_dir)
         fragment_name = _safe_output_name(args.fragment, args.private_output_dir)
+        destination = Path(os.path.abspath(args.raw_dir)) / f"{args.document_id}.pdf"
+        # Catch all operator-supplied metadata errors before staging source bytes.
+        _build_record(args, destination, "0" * 64, 1)
         source_fd, source_path = _open_source_descriptor(args.source, args.approved_root)
         try:
             with (
@@ -242,27 +333,8 @@ def main() -> int:
                 _open_secure_directory(args.private_output_dir) as private_fd,
             ):
                 destination_name = f"{args.document_id}.pdf"
-                sha256, page_count = _copy_validate_and_publish(source_fd, raw_fd, destination_name)
-                destination = Path(os.path.abspath(args.raw_dir)) / destination_name
-                record = DocumentRecord(
-                    document_id=args.document_id,
-                    title=args.title,
-                    organization=args.organization,
-                    year=args.year,
-                    document_type=args.document_type,
-                    language=args.language,
-                    sector=args.sector,
-                    content_stratum=args.content_stratum,
-                    template_family=args.template_family,
-                    source_url=args.source_url,
-                    downloaded_at=args.downloaded_at,
-                    license=args.license,
-                    redistribution_status=args.redistribution_status,
-                    local_path=destination,
-                    sha256=sha256,
-                    page_count=page_count,
-                    inclusion_rationale=args.inclusion_rationale,
-                )
+                pdf_staged, sha256, page_count = _stage_pdf(source_fd, raw_fd)
+                record = _build_record(args, destination, sha256, page_count)
                 report = {
                     "document_id": record.document_id,
                     "source": str(source_path),
@@ -273,10 +345,52 @@ def main() -> int:
                     "redistribution_status": record.redistribution_status,
                     "requires_license_review": record.redistribution_status == "unknown",
                 }
-                _write_private_yaml_no_replace(
-                    private_fd, fragment_name, {"documents": [record.model_dump(mode="json")]}
-                )
-                _write_private_yaml_no_replace(private_fd, report_name, report)
+                fragment_payload = yaml.safe_dump(
+                    {"documents": [record.model_dump(mode="json")]},
+                    allow_unicode=True,
+                    sort_keys=False,
+                ).encode()
+                report_payload = yaml.safe_dump(
+                    report, allow_unicode=True, sort_keys=False
+                ).encode()
+                fragment_staged: _StagedFile | None = None
+                report_staged: _StagedFile | None = None
+                created: list[tuple[int, str, _StagedFile]] = []
+                try:
+                    fragment_staged = _stage_bytes(private_fd, fragment_payload)
+                    report_staged = _stage_bytes(private_fd, report_payload)
+                    _preflight_absent(private_fd, (fragment_name, report_name))
+                    _preflight_absent(raw_fd, (destination_name,))
+                    # Publish metadata first; the PDF link is the transaction commit marker.
+                    for publish_index, (directory_fd, name, staged) in enumerate(
+                        (
+                            (private_fd, fragment_name, fragment_staged),
+                            (private_fd, report_name, report_staged),
+                            (raw_fd, destination_name, pdf_staged),
+                        )
+                    ):
+                        # The PDF is the commit marker. Do remaining fallible durability work first.
+                        if publish_index == 2:
+                            os.fsync(private_fd)
+                            os.fsync(raw_fd)
+                        try:
+                            _publish_staged(directory_fd, staged, name)
+                        except Exception:
+                            if _destination_is_owned(directory_fd, name, staged):
+                                created.append((directory_fd, name, staged))
+                            raise
+                        else:
+                            created.append((directory_fd, name, staged))
+                except Exception:
+                    for directory_fd, name, staged in reversed(created):
+                        _rollback_owned_link(directory_fd, name, staged)
+                    raise
+                finally:
+                    _cleanup_staged(raw_fd, pdf_staged)
+                    if fragment_staged is not None:
+                        _cleanup_staged(private_fd, fragment_staged)
+                    if report_staged is not None:
+                        _cleanup_staged(private_fd, report_staged)
         finally:
             os.close(source_fd)
     except Exception as error:

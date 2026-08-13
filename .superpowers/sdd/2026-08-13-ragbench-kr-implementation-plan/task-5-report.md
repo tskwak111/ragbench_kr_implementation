@@ -58,3 +58,25 @@ Success: no issues found in 20 source files
 .venv/bin/pytest -m 'not live and not gold' -q
 94 passed, 2 skipped
 ```
+
+## Fix round 2 — transactional multi-artifact collection
+
+Collection now treats the final PDF link as its commit marker. It validates operator metadata before staging source bytes, then stages and fsyncs the PDF, private manifest fragment, and review report before it exposes any final output. It preflights all final names, publishes fragment then report, performs remaining directory fsync work, and publishes the PDF last.
+
+Every staged artifact records its device/inode. If metadata or publication fails, rollback stats each final name through its directory descriptor and unlinks it only if it still identifies that invocation's staged inode. Pre-existing and concurrent replacement files are not removed. Temporary names are always cleaned up. The only operations after the PDF commit link are bookkeeping and staged-file cleanup/descriptor closure.
+
+Added regressions for metadata-validation cleanup and retry, pre-existing fragment/report preservation before PDF publication, and injected failures after each publication link. Fresh verification:
+
+```text
+.venv/bin/ruff check .
+All checks passed!
+
+.venv/bin/mypy src/ragbench scripts/collect_corpus.py
+Success: no issues found in 20 source files
+
+.venv/bin/pytest tests/unit/ingestion -q
+22 passed
+
+.venv/bin/pytest -m 'not live and not gold' -q
+100 passed, 2 skipped
+```
