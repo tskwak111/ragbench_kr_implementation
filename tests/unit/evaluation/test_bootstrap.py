@@ -76,3 +76,12 @@ def test_nonfinal_observation_bootstrap_is_explicit_sensitivity_mode() -> None:
     )
     assert result.method == "observation-paired-bootstrap-sensitivity"
     assert result.resamples == 500
+
+
+def test_bootstrap_runtime_contract_rejects_bool_scores_and_noninteger_seed() -> None:
+    with pytest.raises(TypeError, match="scores"):
+        PairedObservation("q", True, False, "d")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="seed"):
+        paired_bootstrap(_observations(), seed="a", resamples=500, final=False)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="final"):
+        paired_bootstrap(_observations(), seed=1, resamples=500, final=1)  # type: ignore[arg-type]

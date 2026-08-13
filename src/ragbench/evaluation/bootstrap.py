@@ -17,6 +17,15 @@ class PairedObservation:
     document_cluster_id: str | None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.observation_id, str) or not isinstance(
+            self.document_cluster_id, (str, type(None))
+        ):
+            raise TypeError("observation and cluster IDs must be strings")
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in (self.left, self.right)
+        ):
+            raise TypeError("paired scores must be real numbers, not booleans")
         if not self.observation_id.strip():
             raise ValueError("observation ID cannot be blank")
         if not math.isfinite(self.left) or not math.isfinite(self.right):
@@ -80,6 +89,10 @@ def paired_bootstrap(
     confidence: float = 0.95,
 ) -> BootstrapInterval:
     """Compute a deterministic percentile CI over paired effects (left minus right)."""
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise TypeError("bootstrap seed must be an integer")
+    if not isinstance(final, bool) or not isinstance(cluster_by_document, bool):
+        raise TypeError("final and cluster mode flags must be booleans")
     if seed is None:
         raise ValueError("a fixed bootstrap seed is required")
     if isinstance(resamples, bool) or not isinstance(resamples, int) or resamples <= 0:

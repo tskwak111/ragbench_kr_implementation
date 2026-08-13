@@ -265,4 +265,16 @@ def aggregate_generation(cases: Sequence[GenerationCase]) -> GenerationAggregate
     identifiers = [case.question_id for case in cases]
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("generation question IDs must be unique")
-    return _aggregate(cases, include_groups=True)
+    aggregate = _aggregate(cases, include_groups=True)
+    return GenerationAggregate(
+        aggregate.question_count,
+        aggregate.deterministic_scorable_count,
+        aggregate.deterministic_correctness,
+        aggregate.faithfulness,
+        aggregate.citation_precision,
+        aggregate.citation_recall,
+        aggregate.abstention_accuracy,
+        aggregate.false_answer_rate,
+        aggregate.false_abstention_rate,
+        MappingProxyType(dict(aggregate.by_question_type)),
+    )

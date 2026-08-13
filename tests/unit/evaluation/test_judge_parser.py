@@ -95,6 +95,17 @@ def test_judge_parser_requires_cited_support_for_positive_decisions() -> None:
         parse_judge_response(json.dumps(payload), _judge_input())
 
 
+def test_faithfulness_and_citation_support_cannot_use_gold_evidence() -> None:
+    payload = _judge_payload()
+    payload["claims"][0]["evidence_ids"] = ["g1"]  # type: ignore[index]
+    payload["claims"][0]["rationale"] = "g1만 근거로 삼았다."  # type: ignore[index]
+    payload["citations"][0]["evidence_ids"] = ["g1"]  # type: ignore[index]
+    payload["citations"][0]["claim_ids"] = []  # type: ignore[index]
+    payload["citations"][0]["rationale"] = "g1만 근거로 삼았다."  # type: ignore[index]
+    with pytest.raises(JudgeParseError, match="retrieved context"):
+        parse_judge_response(json.dumps(payload), _judge_input())
+
+
 def test_judge_parser_requires_rationale_to_name_its_evidence() -> None:
     payload = _judge_payload()
     payload["claims"][0]["rationale"] = "외부 지식상 맞다."  # type: ignore[index]
@@ -106,6 +117,13 @@ def test_judge_rationale_does_not_match_an_evidence_id_prefix() -> None:
     payload = _judge_payload()
     payload["claims"][0]["rationale"] = "e10이 근거다."  # type: ignore[index]
     with pytest.raises(JudgeParseError, match="rationale"):
+        parse_judge_response(json.dumps(payload), _judge_input())
+
+
+def test_judge_rationale_rejects_an_extra_invented_evidence_id() -> None:
+    payload = _judge_payload()
+    payload["rationale"] = "e1과 존재하지 않는 e999를 확인했다."
+    with pytest.raises(JudgeParseError, match="invented"):
         parse_judge_response(json.dumps(payload), _judge_input())
 
 
@@ -147,9 +165,32 @@ async def test_judge_runner_uses_gateway_and_records_exact_identity() -> None:
     assert gateway.request.model_id == "judge-model-v2"
     assert gateway.request.provider_params == {"temperature": 0.0}
     assert result.model_id == "judge-model-v2"
+    assert result.generator_model_id == "generator-model-v1"
+    assert result.same_model_unavailability_reason is None
+    assert result.temperature_unsupported_reason is None
     assert len(result.rubric_hash) == 64
     assert result.temperature == 0.0
     assert result.cached is True
+
+
+@pytest.mark.asyncio
+async def test_judge_record_preserves_fallback_policy_justifications() -> None:
+    gateway = RecordingGateway()
+    config = JudgeConfig(
+        model_id="same-model",
+        generator_model_id="same-model",
+        rubric_version="judge-v1",
+        temperature=None,
+        max_output_tokens=800,
+        same_model_unavailability_reason="no distinct model is deployed",
+        temperature_unsupported_reason="provider model has no temperature parameter",
+    )
+    result = await JudgeRunner(gateway).evaluate(_judge_input(), config)
+    assert result.same_model_unavailability_reason == "no distinct model is deployed"
+    assert (
+        result.temperature_unsupported_reason
+        == "provider model has no temperature parameter"
+    )
 
 
 def test_same_judge_and_generator_requires_unavailability_reason() -> None:
@@ -181,6 +222,8 @@ def test_human_calibration_plan_is_balanced_and_includes_hard_cases() -> None:
     counts = list(plan.stratum_counts.values())
     assert max(counts) - min(counts) <= 1
     assert plan.requires_real_human_labels
+    with pytest.raises(TypeError):
+        plan.stratum_counts["s0::t0"] = 99  # type: ignore[index]
 
 
 def test_human_calibration_plan_rejects_missing_system_type_strata() -> None:
@@ -233,6 +276,8 @@ def test_calibration_reports_rank_binary_agreement_and_type_bias_not_authority()
     assert set(report.mean_bias_by_question_type) == {"fact", "summary"}
     assert report.status == "calibrated-assistant-only"
     assert not report.is_final_authority
+    with pytest.raises(TypeError):
+        report.mean_bias_by_question_type["fact"] = 99  # type: ignore[index]
 
 
 def test_calibration_rejects_too_few_or_nonhuman_labels() -> None:

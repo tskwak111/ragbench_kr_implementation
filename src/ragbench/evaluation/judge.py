@@ -9,6 +9,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -109,9 +110,12 @@ class JudgeRecord(_StrictModel):
 
 class JudgeEvaluation(JudgeRecord):
     model_id: str
+    generator_model_id: str
     rubric_version: str
     rubric_hash: str
     temperature: float | None
+    same_model_unavailability_reason: str | None
+    temperature_unsupported_reason: str | None
     cached: bool | None
     correlation_id: str | None
 
@@ -197,6 +201,7 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
     allowed_evidence = {
         item.evidence_id for item in (*value.gold_evidence, *value.retrieved_context)
     }
+    retrieved_evidence = {item.evidence_id for item in value.retrieved_context}
     cited_evidence = [
         *record.correctness_evidence_ids,
         *record.benchmark_defect_evidence_ids,
@@ -208,6 +213,17 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
         raise JudgeParseError("judge invented an evidence ID")
     if any(item not in expected_claim_ids for item in cited_claims):
         raise JudgeParseError("judge invented a claim ID")
+    if any(
+        evidence not in retrieved_evidence
+        for evidence_ids in (
+            *(claim.evidence_ids for claim in record.claims),
+            *(citation.evidence_ids for citation in record.citations),
+        )
+        for evidence in evidence_ids
+    ):
+        raise JudgeParseError("faithfulness and citation support require retrieved context")
+    if any(citation.supported and not citation.claim_ids for citation in record.citations):
+        raise JudgeParseError("supported citation must link at least one supplied claim")
     if any(claim.supported and not claim.evidence_ids for claim in record.claims) or any(
         citation.supported and not citation.evidence_ids for citation in record.citations
     ):
@@ -227,6 +243,15 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
         for evidence_ids, rationale in rationale_references
     ):
         raise JudgeParseError("each cited evidence ID must appear in its rationale")
+    rationale_texts = (
+        record.rationale,
+        *(claim.rationale for claim in record.claims),
+        *(citation.rationale for citation in record.citations),
+    )
+    for rationale in rationale_texts:
+        references = _evidence_like_ids(rationale)
+        if references - allowed_evidence:
+            raise JudgeParseError("judge rationale contains an invented evidence ID")
     if any(not item.strip() for item in cited_evidence) or any(
         len(items) != len(set(items))
         for items in (
@@ -247,6 +272,11 @@ def _rationale_mentions(evidence_id: str, rationale: str) -> bool:
         rf"(?<![A-Za-z0-9_-]){re.escape(evidence_id)}(?![A-Za-z0-9_-])",
         rationale,
     ) is not None
+
+
+def _evidence_like_ids(rationale: str) -> set[str]:
+    """Extract explicit machine-readable IDs; ordinary Korean/English prose is unaffected."""
+    return set(re.findall(r"(?<![A-Za-z0-9_-])[eg]\d+(?![A-Za-z0-9_-])", rationale))
 
 
 class JudgeRunner:
@@ -273,9 +303,12 @@ class JudgeRunner:
             {
                 **record.model_dump(mode="python"),
                 "model_id": config.model_id,
+                "generator_model_id": config.generator_model_id,
                 "rubric_version": config.rubric_version,
                 "rubric_hash": JUDGE_RUBRIC_HASH,
                 "temperature": config.temperature,
+                "same_model_unavailability_reason": config.same_model_unavailability_reason,
+                "temperature_unsupported_reason": config.temperature_unsupported_reason,
                 "cached": response.cache_hit,
                 "correlation_id": response.correlation_id,
             }
@@ -356,7 +389,9 @@ def plan_human_calibration(
         counts[f"{item.system_id}::{item.question_type}"] += 1
     if max(counts.values()) - min(counts.values()) > 1:
         raise ValueError("available strata cannot satisfy a balanced calibration sample")
-    return HumanCalibrationPlan(tuple(selected), seed, dict(sorted(counts.items())))
+    return HumanCalibrationPlan(
+        tuple(selected), seed, MappingProxyType(dict(sorted(counts.items())))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,7 +497,9 @@ def calibrate_judge(
     grouped: dict[str, list[float]] = defaultdict(list)
     for pair in pairs:
         grouped[pair.question_type].append(pair.judge_score - pair.human_score)
-    bias = {name: sum(values) / len(values) for name, values in sorted(grouped.items())}
+    bias = MappingProxyType(
+        {name: sum(values) / len(values) for name, values in sorted(grouped.items())}
+    )
     return CalibrationReport(
         len(pairs),
         spearman,

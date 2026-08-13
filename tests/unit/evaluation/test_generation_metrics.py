@@ -152,6 +152,8 @@ def test_generation_aggregate_reports_rates_without_hiding_classes() -> None:
     assert aggregate.abstention_accuracy == 0.5
     assert aggregate.false_answer_rate == 0.5
     assert aggregate.false_abstention_rate == 0.5
+    with pytest.raises(TypeError):
+        aggregate.by_question_type["fact"] = aggregate  # type: ignore[index]
 
 
 def test_generation_case_freezes_citation_mapping_for_reproducibility() -> None:
