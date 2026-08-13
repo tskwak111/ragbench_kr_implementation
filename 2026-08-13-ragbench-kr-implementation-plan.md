@@ -258,9 +258,9 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `CorpusManifest.load()`, `validate()`, and immutable `corpus_snapshot_id` derived from sorted document hashes and metadata.
 
-- [ ] **Step 1: Define manifest schema** with `document_id`, title, organization, year, type, language, source URL, download date, license/redistribution status, local path, SHA-256, page count, and inclusion rationale.
-- [ ] **Step 2: Write failing validation tests** for duplicate content, missing provenance, unsupported license state, mismatched page count, malformed PDF, and total page distribution.
-- [ ] **Step 3: Implement collection script.** It copies approved PDFs into ignored `data/raw`, computes hashes/page counts, never silently overwrites, and produces a review report rather than auto-accepting unknown licenses.
+- [x] **Step 1: Define manifest schema** with `document_id`, title, organization, year, type, language, source URL, download date, license/redistribution status, local path, SHA-256, page count, and inclusion rationale.
+- [x] **Step 2: Write failing validation tests** for duplicate content, missing provenance, unsupported license state, mismatched page count, malformed PDF, and total page distribution.
+- [x] **Step 3: Implement collection script.** It copies approved PDFs into ignored `data/raw`, computes hashes/page counts, never silently overwrites, and produces a review report rather than auto-accepting unknown licenses.
 - [ ] **Step 4: Assemble 20–30 documents totaling 1,500–2,000 pages** across corporate/public reports, including table-heavy and text-heavy strata. Avoid a corpus dominated by one organization or one template.
 - [ ] **Step 5: Freeze snapshot** only after manifest validation passes and manually inspect random first/middle/last pages from every file for corruption.
 - [ ] **Step 6: Export a public-safe manifest** excluding nonredistributable document bytes while retaining source/provenance.
@@ -595,7 +595,7 @@ Codex must append one row after every completed task; do not mark a task complet
 | 2 | `0713f1c`, `4309cb4` | Ruff, strict mypy, 8 passed/1 DB skip, offline Alembic SQL | partial | 0 | n/a | Code review approved; live PostgreSQL upgrade/downgrade/upgrade pending because Docker/PostgreSQL is unavailable locally. |
 | 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
 | 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
-| 5 | — | — | pending | 0 | n/a | — |
+| 5 | `f57966e`..`734a4d9` | Ruff, strict mypy, 108 passed/2 skips, 30 ingestion tests | partial | 0 | n/a | Framework approved; real corpus, licensing/manual inspection, freeze and public manifest pending. |
 | 6 | — | — | pending | 0 | pending | — |
 | 7 | — | — | pending | 0 | n/a | — |
 | 8 | — | — | pending | 0 | pending | — |
