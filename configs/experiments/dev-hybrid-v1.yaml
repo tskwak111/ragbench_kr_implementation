@@ -1,0 +1,38 @@
+schema_version: generation-experiment-v1
+name: dev-hybrid-v1
+snapshots:
+  corpus: REPLACE-CORPUS-SNAPSHOT
+  parse: REPLACE-PARSE-SNAPSHOT
+  chunks: REPLACE-CHUNK-SNAPSHOT
+  embeddings: REPLACE-EMBEDDING-SNAPSHOT
+  questions: REPLACE-DEV-SNAPSHOT
+retrieval:
+  config_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  top_k: 5
+generation:
+  provider: upstage
+  model_alias: solar-pro3
+  model_id: solar-pro3
+  prompt_version: v1
+  temperature: 0.0
+  max_output_tokens: 512
+  worst_case_input_tokens: 4096
+evaluation:
+  deterministic_version: v1
+  judge_model_id: solar-pro4
+  judge_prompt_version: v1
+runtime:
+  concurrency: 5
+  max_retries: 5
+  seed: 20260813
+  batch_cap: 3
+  budget_cap_usd: "1.00"
+  schema_error_rate_stop: 0.10
+  provider_error_rate_stop: 0.20
+  error_window: 20
+question_ids:
+  - REPLACE-QUESTION-001
+  - REPLACE-QUESTION-002
+  - REPLACE-QUESTION-003
+output_dir: data/experiments
+code_commit: d1cc890

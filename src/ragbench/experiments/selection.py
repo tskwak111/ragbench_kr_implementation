@@ -7,6 +7,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 
@@ -223,3 +224,123 @@ def export_retrieval_leaderboard(outcomes: Sequence[ScreeningOutcome], path: Pat
     with path.open("x", encoding="utf-8") as stream:
         json.dump(payload, stream, ensure_ascii=False, allow_nan=False, sort_keys=True)
         stream.write("\n")
+
+
+GENERATION_SELECTION_RULE = {
+    "version": "generation-top-three-v1",
+    "quality": "mean(correctness, faithfulness, citation_f1, abstention_accuracy)",
+    "order": [
+        "quality descending",
+        "mean_latency_ms ascending",
+        "total_cost_usd ascending",
+        "config_hash ascending",
+    ],
+    "best_value": (
+        "lowest cost whose quality_ci_high reaches the leader quality_ci_low; "
+        "replace rank three when absent"
+    ),
+    "constraints": ["same cohort", "same question count", "calibrated judge only"],
+}
+GENERATION_SELECTION_RULE_HASH = canonical_json_hash(GENERATION_SELECTION_RULE)
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationOutcome:
+    """One immutable, calibrated development result on a shared question cohort."""
+
+    config_hash: str
+    cohort_hash: str
+    question_count: int
+    correctness: float
+    faithfulness: float
+    citation_f1: float
+    abstention_accuracy: float
+    mean_latency_ms: float
+    total_cost_usd: Decimal
+    quality_ci_low: float
+    quality_ci_high: float
+    judge_calibrated: bool
+
+    def __post_init__(self) -> None:
+        if len(self.config_hash) != 64 or len(self.cohort_hash) != 64:
+            raise ValueError("generation outcome identities must be SHA-256 digests")
+        quality = (
+            self.correctness,
+            self.faithfulness,
+            self.citation_f1,
+            self.abstention_accuracy,
+            self.quality_ci_low,
+            self.quality_ci_high,
+        )
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in quality):
+            raise ValueError("generation quality values must be finite and between zero and one")
+        if self.quality_ci_low > self.quality_ci_high:
+            raise ValueError("quality confidence interval is reversed")
+        if self.question_count <= 0 or self.mean_latency_ms < 0 or self.total_cost_usd < 0:
+            raise ValueError("generation counts, latency, and cost must be nonnegative")
+
+    @property
+    def quality(self) -> float:
+        return (
+            self.correctness + self.faithfulness + self.citation_f1 + self.abstention_accuracy
+        ) / 4
+
+
+def select_generation_top_three(
+    outcomes: Sequence[GenerationOutcome],
+) -> tuple[GenerationOutcome, ...]:
+    """Apply the preregistered quality ranking and retain a competitive best-value row."""
+    if len(outcomes) < 3:
+        raise ValueError("at least three generation outcomes are required")
+    hashes = [outcome.config_hash for outcome in outcomes]
+    if len(hashes) != len(set(hashes)):
+        raise ValueError("duplicate generation outcomes are not allowed")
+    if (
+        len({outcome.cohort_hash for outcome in outcomes}) != 1
+        or len({outcome.question_count for outcome in outcomes}) != 1
+    ):
+        raise ValueError("generation outcomes must use the same cohort and question count")
+    if not all(outcome.judge_calibrated for outcome in outcomes):
+        raise ValueError("generation selection requires calibrated judge status")
+    ranked = sorted(
+        outcomes,
+        key=lambda row: (
+            -row.quality,
+            row.mean_latency_ms,
+            row.total_cost_usd,
+            row.config_hash,
+        ),
+    )
+    leader = ranked[0]
+    competitive = [row for row in ranked if row.quality_ci_high >= leader.quality_ci_low]
+    best_value = min(
+        competitive,
+        key=lambda row: (row.total_cost_usd, -row.quality, row.config_hash),
+    )
+    selected = list(ranked[:3])
+    if best_value not in selected:
+        selected[2] = best_value
+    return tuple(selected)
+
+
+@dataclass(frozen=True, slots=True)
+class BillingReconciliation:
+    """Local/provider comparison that explicitly represents unavailable console billing."""
+
+    local_gross_usd: Decimal
+    provider_console_gross_usd: Decimal | None
+    delta_usd: Decimal | None
+    status: str
+
+
+def reconcile_provider_billing(
+    *, local_gross_usd: Decimal, provider_console_gross_usd: Decimal | None
+) -> BillingReconciliation:
+    if local_gross_usd < 0 or (
+        provider_console_gross_usd is not None and provider_console_gross_usd < 0
+    ):
+        raise ValueError("billing totals cannot be negative")
+    if provider_console_gross_usd is None:
+        return BillingReconciliation(local_gross_usd, None, None, "console-unavailable")
+    delta = provider_console_gross_usd - local_gross_usd
+    return BillingReconciliation(local_gross_usd, provider_console_gross_usd, delta, "reconciled")
