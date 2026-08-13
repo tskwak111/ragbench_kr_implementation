@@ -294,3 +294,67 @@ No local PostgreSQL URL was available. The self-contained 50-query parity and `E
 implemented for CI but remained skipped locally solely on missing `RAGBENCH_TEST_DATABASE_URL`.
 Accordingly, this round does not claim that a live database selected the index or passed parity.
 No embedding API request was made.
+
+## Fix round 2 — migration-safe index rebuild and exclusive retrieval evidence
+
+### Changes
+
+- Hardened revision `20260814_0004` for existing revision-0003 snapshots. Incomplete snapshots and
+  snapshots without an index are marked pending. Completed snapshots are locked and validated
+  before plan metadata changes. Completed dimensions 2001–4000 drop the stored, validated halfvec
+  index with `quote_ident`, create the subvector expression HNSW index under the deterministic name,
+  and only then record `subvector-2000-rerank`, factor 4, and ready state. Completed snapshots above
+  4000 fail closed because revision 0003 could not have finalized a valid index for them.
+- The reverse migration refuses completed dimensions above 4000 and artifact-mode retrieval rows.
+  For compatible completed dimensions 2001–4000, it drops the subvector index and reconstructs the
+  prior `embedding::halfvec(N)`/`halfvec_cosine_ops` HNSW index before removing plan metadata.
+- `EmbeddingService` now inspects an already-complete snapshot before its resume short-circuit. It
+  requires the current dimension-derived strategy, candidate factor, ready state, and deterministic
+  physical index name; stale state raises an explicit migration/index-rebuild error.
+- Expanded the parity fixture from 20 to 100 vectors while candidate K remains 20 for Top-5. The
+  first 2000 dimensions deterministically select the relevant candidate neighborhood; repeated
+  leading angles create ties, while small adversarial tail values force real full-vector reranking.
+  Fifty queries compare the truncated-candidate SQL path to full NumPy ranking. The test asserts
+  candidate K is smaller than the corpus and would fail if the indexed candidate ordering were
+  removed. PostgreSQL `EXPLAIN` still verifies physical HNSW selection when configured.
+- Preserved migrated retrieval evidence in a new nullable `legacy_chunk_id` UUID with its original
+  chunk foreign key. `chunk_id` remains the stable string identifier. A database/model CHECK permits
+  exactly one evidence mode: legacy UUID with no embedding snapshot, or artifact snapshot with no
+  legacy UUID. Existing rows are backfilled into legacy mode before the old column type/FK changes.
+  Downgrade restores UUID `chunk_id` from `legacy_chunk_id` only after proving no artifact-mode rows
+  exist.
+- Corrected the full-vector search expression to cast the stored unbounded vector to its typmod,
+  exactly matching the full-vector HNSW expression index.
+
+### TDD and verification evidence
+
+Focused RED reproduced all three findings:
+
+```text
+5 failed, 10 passed
+
+- complete snapshot did not reject stale plan/name
+- upgrade SQL lacked quote_ident/drop/subvector rebuild
+- downgrade SQL lacked incompatibility guard/halfvec rebuild
+- RetrievalResult lacked legacy_chunk_id and exclusive-mode CHECK
+```
+
+After implementation, the focused migration/service/repository/parity run passed, with the database
+integration test skipped only because no URL was configured:
+
+```text
+............................s                                            [100%]
+28 passed, 1 skipped in 0.61s
+```
+
+Fresh full pre-commit verification before the final expression-index assertion:
+
+```text
+211 passed, 4 skipped in 1.49s
+All checks passed!  # Ruff
+Success: no issues found in 32 source files  # strict mypy
+```
+
+Alembic upgrade through revision 0004 and downgrade `0004:0003` both generated offline SQL
+successfully. No live provider or PostgreSQL operation was executed locally; the 100-row,
+50-query, truncated-candidate parity and migration behavior remain configured-DB CI assertions.

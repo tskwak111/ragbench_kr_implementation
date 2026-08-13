@@ -48,18 +48,23 @@ async def _reset_schema(database_url: str) -> None:
 def _fixture() -> tuple[tuple[ChunkEmbeddingInput, ...], np.ndarray]:
     chunks: list[ChunkEmbeddingInput] = []
     vectors: list[np.ndarray] = []
-    for index in range(20):
+    for index in range(100):
+        group = index % 4
+        within_group = index // 4
         chunks.append(
             ChunkEmbeddingInput(
                 f"chunk-{index:02d}",
-                "doc-a" if index < 10 else "doc-b",
+                "doc-a" if index < 50 else "doc-b",
                 f"문서 조각 {index}",
                 3,
             )
         )
         vector = np.zeros(DIMENSION)
-        vector[index % 4] = 1.0
-        vector[-1] = (index // 2 - 5) / 10
+        angle = ((within_group // 2) - 6) * 0.015
+        vector[group * 2] = np.cos(angle)
+        vector[group * 2 + 1] = np.sin(angle)
+        # Repeated leading angles create ties; the adversarial tail reranks those ties.
+        vector[-1] = ((within_group * 7) % 9 - 4) * 0.002
         vectors.append(vector / np.linalg.norm(vector))
     return tuple(chunks), np.vstack(vectors)
 
@@ -104,8 +109,8 @@ async def test_pgvector_subvector_rerank_matches_numpy_for_50_queries_and_uses_i
             for chunk, vector in zip(chunks, matrix, strict=True)
         )
         await asyncio.gather(
-            repository.persist_batch(snapshot.snapshot_id, vector_rows[:10]),
-            repository.persist_batch(snapshot.snapshot_id, vector_rows[10:]),
+            repository.persist_batch(snapshot.snapshot_id, vector_rows[:50]),
+            repository.persist_batch(snapshot.snapshot_id, vector_rows[50:]),
         )
         await repository.persist_batch(snapshot.snapshot_id, vector_rows[:1])
         completed, duplicate = await asyncio.gather(
@@ -120,9 +125,12 @@ async def test_pgvector_subvector_rerank_matches_numpy_for_50_queries_and_uses_i
         chunk_ids = tuple(chunk.chunk_id for chunk in chunks)
         queries: list[np.ndarray] = []
         for index in range(50):
+            group = index % 4
             query = np.zeros(DIMENSION)
-            query[index % 4] = 1.0
-            query[-1] = ((index % 11) - 5) / 10
+            target = (index % 7) - 3
+            query[group * 2] = np.cos(target * 0.015)
+            query[group * 2 + 1] = np.sin(target * 0.015)
+            query[-1] = ((index % 9) - 4) * 0.002
             queries.append(query / np.linalg.norm(query))
         for query in queries:
             expected = cosine_top_k(query, matrix, 5, chunk_ids)
@@ -136,9 +144,11 @@ async def test_pgvector_subvector_rerank_matches_numpy_for_50_queries_and_uses_i
         )
         filtered = await repository.search(tuple(queries[0]), top_k=20, filter=document_filter)
         assert filtered
-        assert all(int(chunk_id.removeprefix("chunk-")) < 10 for chunk_id, _ in filtered)
+        assert all(int(chunk_id.removeprefix("chunk-")) < 50 for chunk_id, _ in filtered)
 
         spec = dense_search_spec(SNAPSHOT_ID, dimension=DIMENSION, top_k=5)
+        assert spec.params["candidate_k"] == 20
+        assert spec.params["candidate_k"] < len(chunks)
         query_literal = "[" + ",".join(format(value, ".17g") for value in queries[0]) + "]"
         async with engine.begin() as connection:
             await connection.execute(text("ANALYZE chunk_embedding"))

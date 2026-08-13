@@ -271,6 +271,7 @@ class RetrievalResult(Base):
         ForeignKey("experiment_response.id", ondelete="RESTRICT"), nullable=False
     )
     embedding_snapshot_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    legacy_chunk_id: Mapped[UUID | None] = mapped_column(nullable=True)
     chunk_id: Mapped[str] = mapped_column(String(512), nullable=False)
     retriever: Mapped[str] = mapped_column(String(64), nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -278,6 +279,14 @@ class RetrievalResult(Base):
     created_at: Mapped[CreatedAt]
     __table_args__ = (
         CheckConstraint("rank > 0", name="retrieval_rank_positive"),
+        CheckConstraint(
+            "((legacy_chunk_id IS NOT NULL AND embedding_snapshot_id IS NULL) OR "
+            "(legacy_chunk_id IS NULL AND embedding_snapshot_id IS NOT NULL))",
+            name="retrieval_result_exactly_one_evidence_mode",
+        ),
+        ForeignKeyConstraint(
+            ["legacy_chunk_id"], ["chunk.id"], ondelete="RESTRICT"
+        ),
         ForeignKeyConstraint(
             ["embedding_snapshot_id", "chunk_id"],
             ["chunk_artifact.embedding_snapshot_id", "chunk_artifact.chunk_id"],

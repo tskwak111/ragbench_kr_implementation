@@ -74,6 +74,14 @@ def test_subvector_search_sql_matches_partial_index_and_reranks_full_vectors() -
     assert ":snapshot_id" not in spec.sql
 
 
+def test_full_vector_search_order_matches_full_vector_expression_index() -> None:
+    """Catch querying an unbounded vector expression that cannot use the typmod HNSW index."""
+    spec = dense_search_spec(UUID(int=8), dimension=1024, top_k=5)
+
+    expression = "ce.embedding::vector(1024) <=> CAST(:query AS vector(1024))"
+    assert f"ORDER BY {expression} ASC, ce.chunk_id ASC" in spec.sql
+
+
 def _chunks() -> tuple[ChunkEmbeddingInput, ...]:
     return (
         ChunkEmbeddingInput(

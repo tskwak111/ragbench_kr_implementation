@@ -198,8 +198,10 @@ def dense_search_spec(
     if document_ids:
         document_clause = " AND ca.document_id = ANY(:document_ids)"
         params["document_ids"] = list(sorted(set(document_ids)))
-    full = f"ce.embedding <=> CAST(:query AS vector({dimension}))"
     if plan.strategy == "full-vector-hnsw":
+        full = (
+            f"ce.embedding::vector({dimension}) <=> CAST(:query AS vector({dimension}))"
+        )
         sql = (
             f"SELECT ce.chunk_id, 1.0 - ({full}) AS score FROM chunk_embedding ce "
             "JOIN chunk_artifact ca ON ca.embedding_snapshot_id = ce.embedding_snapshot_id "
@@ -207,6 +209,7 @@ def dense_search_spec(
             f"ORDER BY {full} ASC, ce.chunk_id ASC LIMIT :top_k"
         )
     else:
+        full = f"ce.embedding <=> CAST(:query AS vector({dimension}))"
         indexed = (
             "subvector(ce.embedding, 1, 2000)::vector(2000) <=> "
             f"subvector(CAST(:query AS vector({dimension})), 1, 2000)::vector(2000)"
@@ -282,7 +285,13 @@ class MemoryEmbeddingRepository:
         snapshot = self._require_snapshot(snapshot_id)
         if set(self.vectors[snapshot_id]) != set(self.artifacts[snapshot_id]):
             raise RuntimeError("cannot finalize without exact artifact/vector set")
-        completed = replace(snapshot, complete=True, index_state="ready")
+        try:
+            index_name = hnsw_index_spec(UUID(snapshot.snapshot_id), snapshot.dimension).name
+        except ValueError:
+            index_name = "memory-index"
+        completed = replace(
+            snapshot, complete=True, index_name=index_name, index_state="ready"
+        )
         self.snapshots[snapshot_id] = completed
         return completed
 

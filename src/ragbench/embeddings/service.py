@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from uuid import UUID
 
 import numpy as np
 
@@ -10,6 +11,8 @@ from ragbench.embeddings.repository import (
     ChunkEmbeddingInput,
     EmbeddingRepository,
     EmbeddingSnapshot,
+    embedding_index_plan,
+    hnsw_index_spec,
 )
 from ragbench.providers.base import EmbedRequest, EmbedResponse, ProviderGateway
 
@@ -40,8 +43,12 @@ class EmbeddingService:
         chunk_ids = [chunk.chunk_id for chunk in chunks]
         if len(chunk_ids) != len(set(chunk_ids)):
             raise ValueError("embedding snapshot chunks must have unique IDs")
+        existing = await self._repository.get_snapshot(snapshot.snapshot_id)
+        if existing is not None and existing.complete:
+            self._validate_complete_index(existing)
         stored = await self._repository.create_snapshot(snapshot, chunks)
         if stored.complete:
+            self._validate_complete_index(stored)
             return stored
         completed = await self._repository.completed_chunk_ids(snapshot.snapshot_id)
         missing = [chunk for chunk in chunks if chunk.chunk_id not in completed]
@@ -79,6 +86,7 @@ class EmbeddingService:
             raise KeyError(f"unknown embedding snapshot: {snapshot_id}")
         if not snapshot.complete:
             raise RuntimeError("embedding snapshot is incomplete")
+        self._validate_complete_index(snapshot)
         response = await self._gateway.embed(
             EmbedRequest(
                 model_id=snapshot.query_model_id,
@@ -143,3 +151,20 @@ class EmbeddingService:
                 raise ValueError("embedding response contains a zero vector")
             validated.append(tuple(float(value) for value in vector / norm))
         return tuple(validated)
+
+    @staticmethod
+    def _validate_complete_index(snapshot: EmbeddingSnapshot) -> None:
+        plan = embedding_index_plan(snapshot.dimension)
+        valid = (
+            snapshot.index_strategy == plan.strategy
+            and snapshot.candidate_factor == plan.candidate_factor
+            and snapshot.index_state == "ready"
+            and bool(snapshot.index_name)
+        )
+        expected_name: str | None
+        try:
+            expected_name = hnsw_index_spec(UUID(snapshot.snapshot_id), snapshot.dimension).name
+        except ValueError:
+            expected_name = snapshot.index_name
+        if not valid or snapshot.index_name != expected_name:
+            raise RuntimeError("embedding snapshot requires migration or index rebuild")

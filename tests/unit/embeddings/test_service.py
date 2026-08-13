@@ -56,6 +56,8 @@ def _snapshot(
         candidate_factor=plan.candidate_factor,
         created_at=datetime(2026, 8, 14, tzinfo=UTC),
         complete=complete,
+        index_name="memory-index" if complete else None,
+        index_state="ready" if complete else "pending",
     )
 
 
@@ -112,6 +114,52 @@ async def test_embed_chunks_resumes_only_missing_chunks_and_finalizes_last() -> 
     assert gateway.requests[0].texts == ("a", "c")
     assert completed.complete is True
     assert repository.finalize_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_snapshot_rejects_stale_index_plan_before_short_circuit() -> None:
+    """Catch returning a v0003 halfvec index after metadata expects subvector reranking."""
+    chunks = (_chunk("a", "a", 1),)
+    snapshot = _snapshot(chunks=chunks, complete=True)
+    stale = replace(
+        snapshot,
+        index_name="old-halfvec-index",
+        index_state="ready",
+    )
+    object.__setattr__(stale, "index_strategy", "subvector-2000-rerank")
+    object.__setattr__(stale, "candidate_factor", 4)
+    repository = MemoryEmbeddingRepository()
+    repository.snapshots[snapshot.snapshot_id] = stale
+    repository.vectors[snapshot.snapshot_id] = {"a": (1.0, 0.0)}
+    repository.artifacts[snapshot.snapshot_id] = {"a": chunks[0]}
+    service = EmbeddingService(
+        RecordingGateway([]), repository, max_batch_items=2, max_batch_tokens=10
+    )
+
+    with pytest.raises(RuntimeError, match="migration or index rebuild"):
+        await service.embed_chunks(snapshot, chunks)
+
+
+@pytest.mark.asyncio
+async def test_complete_snapshot_requires_expected_generated_index_name() -> None:
+    """Catch trusting a complete flag whose physical index identity is stale."""
+    chunks = (_chunk("a", "a", 1),)
+    snapshot = replace(
+        _snapshot(chunks=chunks, complete=True),
+        snapshot_id="00000000-0000-0000-0000-000000000888",
+        index_name="wrong-index",
+        index_state="ready",
+    )
+    repository = MemoryEmbeddingRepository()
+    repository.snapshots[snapshot.snapshot_id] = snapshot
+    repository.vectors[snapshot.snapshot_id] = {"a": (1.0, 0.0)}
+    repository.artifacts[snapshot.snapshot_id] = {"a": chunks[0]}
+    service = EmbeddingService(
+        RecordingGateway([]), repository, max_batch_items=2, max_batch_tokens=10
+    )
+
+    with pytest.raises(RuntimeError, match="migration or index rebuild"):
+        await service.embed_chunks(snapshot, chunks)
 
 
 @pytest.mark.asyncio
