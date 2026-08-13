@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -32,12 +33,37 @@ PRICE_PATH = PROJECT_ROOT / "configs" / "prices.yaml"
 SMOKE_MAX_OUTPUT_TOKENS = 200
 SMOKE_SOLAR_INPUT_TOKENS = 20
 SMOKE_EMBED_INPUT_TOKENS = 50
-SMOKE_PDF = (
-    b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-    b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-    b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
-    b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
-)
+
+
+def build_smoke_pdf() -> bytes:
+    """Create a standards-valid, locally generated one-page PDF for bounded parse smoke tests."""
+    stream = b"BT /F1 12 Tf 72 720 Td (RAGBench provider smoke) Tj ET\n"
+    objects = (
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+        ),
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    )
+    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{number} 0 obj\n".encode())
+        output.extend(body)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+    output.extend(b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:]))
+    trailer = f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+    output.extend(trailer.encode())
+    return bytes(output)
+
+
+SMOKE_PDF = build_smoke_pdf()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +173,11 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
         as_json: bool = typer.Option(False, "--json", help="Emit one JSON object."),
     ) -> None:
         """Show settled provider cost and remaining hard-budget capacity."""
-        _emit(active.usage_status(), as_json)
+        try:
+            _emit(active.usage_status(), as_json)
+        except Exception:
+            _emit({"ok": False, "error": "usage status unavailable"}, as_json)
+            raise typer.Exit(code=1) from None
 
     def add_smoke_command(name: str, operation: str) -> None:
         @smoke.command(name)
@@ -176,11 +206,22 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
                 _emit(preview, as_json)
                 return
             reasons = _execution_blockers(active, approve)
+            try:
+                active.price_book.verify_paid_batch(now=active.now())
+            except PriceBookError as error:
+                reasons.append(str(error))
             if reasons:
                 _emit({**preview, "executed": False, "blockers": reasons}, as_json)
                 raise typer.Exit(code=1)
             assert active.gateway_factory is not None
-            result = asyncio.run(_execute_once(active.gateway_factory(), operation, request))
+            try:
+                gateway = active.gateway_factory()
+                result = asyncio.run(_execute_once(gateway, operation, request, active.now))
+            except Exception:
+                _emit(
+                    {**preview, "executed": False, "error": "provider smoke unavailable"}, as_json
+                )
+                raise typer.Exit(code=1) from None
             _emit(
                 {
                     **preview,
@@ -264,7 +305,12 @@ def _execution_blockers(services: CommandServices, approve: bool) -> list[str]:
     return blockers
 
 
-async def _execute_once(gateway: ProviderGateway, operation: str, request: Any) -> dict[str, Any]:
+async def _execute_once(
+    gateway: ProviderGateway,
+    operation: str,
+    request: Any,
+    now: Callable[[], datetime],
+) -> dict[str, Any]:
     """Perform one gateway request and close owned HTTP resources on every outcome."""
     started = perf_counter()
     response: Any
@@ -282,6 +328,9 @@ async def _execute_once(gateway: ProviderGateway, operation: str, request: Any) 
     raw = response.raw_response
     return {
         "provider_response_id": raw.get("id"),
+        "correlation_id": response.correlation_id,
+        "usage_correlation_id": response.correlation_id,
+        "executed_at_utc": now().isoformat().replace("+00:00", "Z"),
         "latency_ms": round((perf_counter() - started) * 1000),
     }
 
@@ -416,25 +465,33 @@ def _build_gateway(settings: Settings) -> ProviderGateway:
     """Wire the production gateway only after all explicit live guards have passed."""
     if not settings.upstage_api_key:
         raise RuntimeError("UPSTAGE_API_KEY is required")
-    session_factory = create_session_factory(settings)
-    lock_session_factory = create_lock_session_factory(settings)
-    store = SqlAlchemyProviderStore(
-        session_factory=session_factory,
-        lock_session_factory=lock_session_factory,
-        max_lock_connections=settings.max_lock_connections,
-    )
-    gateway = UpstageGateway(
-        api_key=settings.upstage_api_key,
-        base_url=settings.upstage_base_url,
-        price_book=PriceBook.from_yaml(PRICE_PATH),
-        budget_guard=BudgetGuard(
-            SqlAlchemyBudgetRepository(session_factory), hard_limit=settings.max_project_budget_usd
-        ),
-        store=store,
-        max_concurrency=settings.max_concurrency,
-        max_retries=settings.max_retries,
-    )
-    return _ManagedGateway(gateway, session_factory, lock_session_factory)
+    session_factory: async_sessionmaker[AsyncSession] | None = None
+    lock_session_factory: async_sessionmaker[AsyncSession] | None = None
+    gateway: UpstageGateway | None = None
+    try:
+        session_factory = create_session_factory(settings)
+        lock_session_factory = create_lock_session_factory(settings)
+        store = SqlAlchemyProviderStore(
+            session_factory=session_factory,
+            lock_session_factory=lock_session_factory,
+            max_lock_connections=settings.max_lock_connections,
+        )
+        gateway = UpstageGateway(
+            api_key=settings.upstage_api_key,
+            base_url=settings.upstage_base_url,
+            price_book=PriceBook.from_yaml(PRICE_PATH),
+            budget_guard=BudgetGuard(
+                SqlAlchemyBudgetRepository(session_factory),
+                hard_limit=settings.max_project_budget_usd,
+            ),
+            store=store,
+            max_concurrency=settings.max_concurrency,
+            max_retries=0,
+        )
+        return _ManagedGateway(gateway, session_factory, lock_session_factory)
+    except BaseException:
+        asyncio.run(_dispose_resources(gateway, session_factory, lock_session_factory))
+        raise
 
 
 class _ManagedGateway:
@@ -460,14 +517,34 @@ class _ManagedGateway:
         return await self._gateway.embed(request)
 
     async def aclose(self) -> None:
-        await self._gateway.aclose()
-        await self._session_factory.kw["bind"].dispose()
-        await self._lock_session_factory.kw["bind"].dispose()
+        await _dispose_resources(self._gateway, self._session_factory, self._lock_session_factory)
 
 
-app = build_app()
+async def _dispose_resources(
+    gateway: Any | None,
+    session_factory: Any | None,
+    lock_session_factory: Any | None,
+) -> None:
+    """Close independently owned HTTP and SQL resources even when an earlier close fails."""
+    try:
+        if gateway is not None:
+            await gateway.aclose()
+    finally:
+        try:
+            if session_factory is not None:
+                await session_factory.kw["bind"].dispose()
+        finally:
+            if lock_session_factory is not None:
+                await lock_session_factory.kw["bind"].dispose()
 
 
 def main() -> None:
     """Console-script entry point."""
-    app()
+    try:
+        build_app()()
+    except Exception:
+        if "--json" in sys.argv:
+            typer.echo(json.dumps({"ok": False, "error": "configuration unavailable"}))
+        else:
+            typer.echo("configuration unavailable", err=True)
+        raise SystemExit(1) from None

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import sys
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
+import ragbench.cli as cli
 from ragbench.cli import CheckResult, CommandServices, PreflightProbes, build_app
 from ragbench.core.config import Settings
 from ragbench.providers.base import (
@@ -33,15 +38,26 @@ class FakeGateway:
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self.requests.append(request)
-        return GenerateResponse(content="확인", raw_response={"id": "fake-solar"})
+        return GenerateResponse(
+            content="확인",
+            raw_response={"id": "fake-solar", "correlation_id": "correlation-solar"},
+            correlation_id="correlation-solar",
+        )
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         self.requests.append(request)
-        return ParsedDocument(raw_response={"id": "fake-parse"})
+        return ParsedDocument(
+            raw_response={"id": "fake-parse", "correlation_id": "correlation-parse"},
+            correlation_id="correlation-parse",
+        )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         self.requests.append(request)
-        return EmbedResponse(embeddings=((0.1, 0.2),), raw_response={"id": "fake-embed"})
+        return EmbedResponse(
+            embeddings=((0.1, 0.2),),
+            raw_response={"id": "fake-embed", "correlation_id": "correlation-embed"},
+            correlation_id="correlation-embed",
+        )
 
     async def aclose(self) -> None:
         self.closed = True
@@ -65,7 +81,7 @@ def _services(
         budget=lambda: _check("budget", detail="134.500000 USD remaining"),
     )
     return CommandServices(
-        settings=Settings(upstage_api_key=secret),
+        settings=Settings(upstage_api_key=secret, run_live_upstage_tests=False),
         price_book=PriceBook.from_yaml(PROJECT_ROOT / "configs" / "prices.yaml"),
         probes=probes,
         usage_status=lambda: {"settled_cost_usd": "0.500000", "remaining_usd": "134.500000"},
@@ -144,7 +160,11 @@ def test_smoke_execute_uses_fake_gateway_once_only_after_all_live_guards() -> No
     payload = json.loads(result.output)
     assert payload["executed"] is True
     assert payload["operation"] == "embed"
+    assert payload["model_id"] == "embedding-query"
     assert payload["provider_response_id"] == "fake-embed"
+    assert payload["correlation_id"] == "correlation-embed"
+    assert payload["usage_correlation_id"] == "correlation-embed"
+    assert payload["executed_at_utc"] == "2026-08-13T00:00:00Z"
     assert payload["projected_max_usd"] == "0.000000"
 
 
@@ -162,3 +182,173 @@ def test_prices_verify_and_usage_status_are_machine_readable() -> None:
         "remaining_usd": "134.500000",
         "settled_cost_usd": "0.500000",
     }
+
+
+def test_smoke_rechecks_stale_prices_before_gateway_construction() -> None:
+    """Catch dispatching a paid request after the price snapshot ages since dry-run."""
+    gateway_calls = 0
+    snapshot = deepcopy(PriceBook.from_yaml(PROJECT_ROOT / "configs" / "prices.yaml").snapshot())
+    snapshot["verified_at"] = "2026-08-10T00:00:00Z"
+    services = _services(live_enabled=True)
+    services.price_book = PriceBook(snapshot)
+
+    def never_construct() -> FakeGateway:
+        nonlocal gateway_calls
+        gateway_calls += 1
+        return FakeGateway()
+
+    services.gateway_factory = never_construct
+    result = RUNNER.invoke(
+        build_app(services), ["smoke", "solar", "--execute", "--approve", "--json"]
+    )
+
+    assert result.exit_code == 1
+    assert gateway_calls == 0
+    payload = json.loads(result.output)
+    assert payload["executed"] is False
+    assert payload["blockers"] == ["price snapshot is older than 24 hours"]
+
+
+def test_usage_status_operational_failure_is_valid_redacted_json() -> None:
+    """Catch a database failure producing a traceback instead of an operator-safe result."""
+    services = _services()
+
+    def unavailable() -> dict[str, str]:
+        raise OSError("secret-value-that-must-not-appear")
+
+    services.usage_status = unavailable
+    result = RUNNER.invoke(build_app(services), ["usage", "status", "--json"])
+
+    assert result.exit_code == 1
+    assert "secret-value-that-must-not-appear" not in result.output
+    assert json.loads(result.output) == {"error": "usage status unavailable", "ok": False}
+
+
+def test_main_serializes_settings_construction_failure_when_json_requested(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catch invalid live environment settings failing before the CLI can emit JSON."""
+    monkeypatch.setattr(
+        cli, "build_app", lambda: (_ for _ in ()).throw(ValueError("api key: secret"))
+    )
+    monkeypatch.setattr(sys, "argv", ["ragbench", "preflight", "--json"])
+
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+
+    assert exited.value.code == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "configuration unavailable",
+        "ok": False,
+    }
+
+
+def test_main_redacts_missing_key_live_settings_error_as_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catch RUN_LIVE_UPSTAGE_TESTS validation leaking details before a JSON command starts."""
+    monkeypatch.setenv("RUN_LIVE_UPSTAGE_TESTS", "1")
+    monkeypatch.delenv("UPSTAGE_API_KEY", raising=False)
+    monkeypatch.setattr(sys, "argv", ["ragbench", "preflight", "--json"])
+
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+
+    assert exited.value.code == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "configuration unavailable",
+        "ok": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_managed_gateway_disposes_both_engines_when_gateway_close_fails() -> None:
+    """Catch a failed HTTP cleanup preventing normal or lock-engine disposal."""
+    events: list[str] = []
+
+    class ClosingGateway:
+        async def aclose(self) -> None:
+            events.append("gateway")
+            raise RuntimeError("gateway close failed")
+
+    class Engine:
+        async def dispose(self) -> None:
+            events.append("engine")
+
+    class Factory:
+        def __init__(self) -> None:
+            self.kw: dict[str, Any] = {"bind": Engine()}
+
+    with pytest.raises(RuntimeError, match="gateway close failed"):
+        await cli._ManagedGateway(ClosingGateway(), Factory(), Factory()).aclose()  # type: ignore[arg-type]
+
+    assert events == ["gateway", "engine", "engine"]
+
+
+def test_smoke_pdf_is_a_one_page_pdf_with_cross_reference_table() -> None:
+    """Catch using an invalid PDF byte fragment for a billed parse smoke operation."""
+    assert cli.SMOKE_PDF.startswith(b"%PDF-1.4\n")
+    assert b"xref\n" in cli.SMOKE_PDF
+    assert b"/Count 1" in cli.SMOKE_PDF
+    assert cli.SMOKE_PDF.rstrip().endswith(b"%%EOF")
+
+
+def test_smoke_gateway_forces_one_http_attempt_for_retryable_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch smoke wiring inheriting normal retries for 429 or 5xx provider responses."""
+    retries: list[int] = []
+    events: list[str] = []
+
+    class Engine:
+        async def dispose(self) -> None:
+            events.append("engine")
+
+    class Factory:
+        def __init__(self) -> None:
+            self.kw: dict[str, Any] = {"bind": Engine()}
+
+    class Gateway:
+        def __init__(self, **kwargs: Any) -> None:
+            retries.append(kwargs["max_retries"])
+
+        async def aclose(self) -> None:
+            events.append("gateway")
+
+    monkeypatch.setattr(cli, "create_session_factory", lambda settings: Factory())
+    monkeypatch.setattr(cli, "create_lock_session_factory", lambda settings: Factory())
+    monkeypatch.setattr(cli, "SqlAlchemyProviderStore", lambda **kwargs: object())
+    monkeypatch.setattr(cli, "UpstageGateway", Gateway)
+
+    managed = cli._build_gateway(Settings(upstage_api_key="redacted", max_retries=5))
+    assert retries == [0]
+    import asyncio
+
+    asyncio.run(managed.aclose())
+    assert events == ["gateway", "engine", "engine"]
+
+
+def test_gateway_construction_failure_disposes_created_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a lock-factory construction error leaking the already-created normal engine."""
+    events: list[str] = []
+
+    class Engine:
+        async def dispose(self) -> None:
+            events.append("engine")
+
+    class Factory:
+        kw: dict[str, Any] = {"bind": Engine()}
+
+    monkeypatch.setattr(cli, "create_session_factory", lambda settings: Factory())
+    monkeypatch.setattr(
+        cli,
+        "create_lock_session_factory",
+        lambda settings: (_ for _ in ()).throw(RuntimeError("lock factory failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="lock factory failed"):
+        cli._build_gateway(Settings(upstage_api_key="redacted"))
+
+    assert events == ["engine"]

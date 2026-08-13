@@ -350,7 +350,7 @@ class UpstageGateway(ProviderGateway):
             await self._store.put(
                 key, operation="generate", model_id=request.model_id, response=raw
             )
-            return result
+            return GenerateResponse(result.content, result.raw_response, str(correlation_id))
 
     def cache_key_for_generate(self, request: GenerateRequest) -> str:
         """Return the deterministic key used by generation cache lookups."""
@@ -422,7 +422,7 @@ class UpstageGateway(ProviderGateway):
                 cache_hit=False,
             )
             await self._store.put(key, operation="embed", model_id=request.model_id, response=raw)
-            return result
+            return EmbedResponse(result.embeddings, result.raw_response, str(correlation_id))
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         _reject_reserved_params(
@@ -491,7 +491,7 @@ class UpstageGateway(ProviderGateway):
                 cache_hit=False,
             )
             await self._store.put(key, operation="parse", model_id=request.model_id, response=raw)
-            return result
+            return ParsedDocument(result.raw_response, str(correlation_id))
 
     async def _reserve(self, projected: Decimal) -> tuple[UUID, Reservation]:
         correlation_id = uuid4()
@@ -500,44 +500,46 @@ class UpstageGateway(ProviderGateway):
         )
         return correlation_id, reservation
 
-    async def _record_cache_hit(self, *, operation: str, model_id: str, usage: Usage) -> None:
+    async def _record_cache_hit(self, *, operation: str, model_id: str, usage: Usage) -> str:
+        correlation_id = uuid4()
         await self._budget_guard.record_cache_hit(
-            correlation_id=uuid4(),
+            correlation_id=correlation_id,
             operation=operation,
             model_id=model_id,
             usage=usage,
         )
+        return str(correlation_id)
 
     async def _cached_generation(
         self, request: GenerateRequest, cached: CachedResponse
     ) -> GenerateResponse:
         result = self._generation_response(cached.response)
         usage = self._generation_usage(request, cached.response)
-        await self._record_cache_hit(
+        correlation_id = await self._record_cache_hit(
             operation="generate",
             model_id=request.model_id,
             usage=Usage(usage.input_tokens, usage.output_tokens, 0, Decimal("0")),
         )
-        return result
+        return GenerateResponse(result.content, result.raw_response, correlation_id)
 
     async def _cached_embedding(
         self, request: EmbedRequest, cached: CachedResponse
     ) -> EmbedResponse:
         result = self._embedding_response(cached.response)
-        await self._record_cache_hit(
+        correlation_id = await self._record_cache_hit(
             operation="embed",
             model_id=request.model_id,
             usage=Usage(request.input_tokens, 0, 0, Decimal("0")),
         )
-        return result
+        return EmbedResponse(result.embeddings, result.raw_response, correlation_id)
 
     async def _cached_parse(self, request: ParseRequest, cached: CachedResponse) -> ParsedDocument:
-        await self._record_cache_hit(
+        correlation_id = await self._record_cache_hit(
             operation="parse",
             model_id=request.model_id,
             usage=Usage(0, 0, request.billable_pages, Decimal("0")),
         )
-        return ParsedDocument(cached.response)
+        return ParsedDocument(cached.response, correlation_id)
 
     async def _request(
         self,

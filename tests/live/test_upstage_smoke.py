@@ -19,6 +19,7 @@ if not os.environ.get("UPSTAGE_API_KEY"):
         "UPSTAGE_API_KEY is required for live provider smoke tests", allow_module_level=True
     )
 
+from ragbench.cli import SMOKE_PDF
 from ragbench.core.config import Settings
 from ragbench.core.money import BudgetGuard, MemoryBudgetRepository
 from ragbench.providers.base import EmbedRequest, GenerateRequest, ParseRequest
@@ -30,12 +31,6 @@ MAX_SOLAR_OUTPUT_TOKENS = 16
 MAX_SOLAR_COST_USD = Decimal("0.000025")
 MAX_PARSE_COST_USD = Decimal("0.010000")
 MAX_EMBED_COST_USD = Decimal("0.000001")
-ONE_PAGE_PDF = (
-    b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-    b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-    b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
-    b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
-)
 
 pytestmark = pytest.mark.live
 
@@ -86,8 +81,8 @@ async def test_live_parse_smoke_is_one_page_and_cached(live_gateway: UpstageGate
     """One locally generated one-page PDF parse smoke call and cache repeat."""
     request = ParseRequest(
         model_id="document-parse",
-        document_sha256=hashlib.sha256(ONE_PAGE_PDF).hexdigest(),
-        content=ONE_PAGE_PDF,
+        document_sha256=hashlib.sha256(SMOKE_PDF).hexdigest(),
+        content=SMOKE_PDF,
         billable_pages=1,
     )
     projected = PriceBook.from_yaml(PROJECT_ROOT / "configs" / "prices.yaml").estimate(
