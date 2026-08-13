@@ -18,6 +18,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     false,
     text,
 )
@@ -50,12 +51,40 @@ class ParseRun(Base):
     document_id: Mapped[UUID] = mapped_column(
         ForeignKey("document.id", ondelete="RESTRICT"), nullable=False
     )
+    corpus_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_model_version: Mapped[str] = mapped_column(String(255), nullable=False)
     mode: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(64), nullable=False)
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     raw_response_hash: Mapped[str | None] = mapped_column(String(64))
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    elements: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    page_mappings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[CreatedAt]
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "corpus_snapshot_id",
+            "provider_model_id",
+            "provider_model_version",
+            "mode",
+            name="uq_parse_run_checkpoint",
+        ),
+        Index(
+            "ix_parse_run_snapshot_mode_status",
+            "corpus_snapshot_id",
+            "mode",
+            "status",
+        ),
+        CheckConstraint("latency_ms >= 0", name="parse_run_latency_nonnegative"),
+        CheckConstraint("cost_usd >= 0", name="parse_run_cost_nonnegative"),
+    )
 
 
 class EmbeddingSnapshot(Base):

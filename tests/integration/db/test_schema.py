@@ -15,7 +15,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from ragbench.core.hashing import canonical_json_hash
 from ragbench.core.money import SqlAlchemyBudgetRepository, Usage
+from ragbench.ingestion.parser import ParseCheckpoint, SqlAlchemyParseRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -181,5 +183,56 @@ async def test_initial_migration_creates_experiment_evidence_schema() -> None:
         assert transition.status == "settled"
         assert transition.settled_cost_usd == Decimal("0.000008")
         assert transition.estimated_cost_usd == Decimal("0.000008")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_parse_checkpoint_repository_round_trips_complete_evidence() -> None:
+    """Catch SQL persistence losing provider output or breaking checkpoint idempotency."""
+    database_url = _test_database_url()
+    if database_url is None:
+        pytest.skip("RAGBENCH_TEST_DATABASE_URL is not configured")
+
+    await _reset_schema(database_url)
+    await asyncio.to_thread(command.upgrade, _alembic_config(database_url), "head")
+    engine = create_async_engine(database_url)
+    try:
+        repository = SqlAlchemyParseRepository(async_sessionmaker(engine, expire_on_commit=False))
+        raw = {
+            "model_version": "v1",
+            "content": {"markdown": "first", "html": "<p>first</p>"},
+            "elements": [{"category": "paragraph", "page": 1}],
+            "pages": [{"page": 1, "source_page": 1}],
+            "usage": {"pages": 1},
+        }
+        checkpoint = ParseCheckpoint(
+            "a" * 64,
+            "doc-a",
+            "b" * 64,
+            1,
+            "document-parse",
+            "v1",
+            "standard",
+            "succeeded",
+            raw,
+            canonical_json_hash(raw),
+            "first",
+            "<p>first</p>",
+            ({"category": "paragraph", "page": 1},),
+            ({"page": 1, "source_page": 1},),
+            12,
+            Decimal("0.010000"),
+            "correlation-a",
+        )
+        await repository.put(checkpoint)
+        await repository.put(checkpoint)
+
+        restored = await repository.get("a" * 64, "b" * 64, "standard")
+        async with engine.connect() as connection:
+            count = await connection.scalar(text("SELECT count(*) FROM parse_run"))
+        assert count == 1
+        assert restored == checkpoint
     finally:
         await engine.dispose()
