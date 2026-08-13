@@ -80,6 +80,13 @@ class GenerationCase:
             not isinstance(value, MaterialClaim) for value in self.claims
         ):
             raise TypeError("claims must be a list or tuple of MaterialClaim values")
+        if not isinstance(self.claim_citations, Mapping) or any(
+            not isinstance(claim_id, str)
+            or not isinstance(citations, (list, tuple))
+            or any(not isinstance(citation, str) for citation in citations)
+            for claim_id, citations in self.claim_citations.items()
+        ):
+            raise TypeError("citation collections must be lists or tuples of string IDs")
         object.__setattr__(self, "aliases", tuple(self.aliases))
         object.__setattr__(self, "claims", tuple(self.claims))
         if not self.question_id.strip() or not self.question_type.strip():

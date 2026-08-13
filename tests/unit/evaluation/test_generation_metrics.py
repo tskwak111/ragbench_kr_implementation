@@ -221,6 +221,18 @@ def test_generation_collections_reject_strings_disguised_as_containers() -> None
             (),
             {},
         )
+    with pytest.raises(TypeError, match="citation collections"):
+        GenerationCase(
+            "q1",
+            "fact",
+            "답",
+            (),
+            True,
+            "답",
+            False,
+            (MaterialClaim("c1", True, {"e1"}),),  # type: ignore[arg-type]
+            {"c1": "e1"},  # type: ignore[dict-item]
+        )
 
 
 def test_generation_state_fields_require_actual_booleans() -> None:
