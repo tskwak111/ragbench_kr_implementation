@@ -13,6 +13,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -93,14 +94,27 @@ class EmbeddingSnapshot(Base):
     __tablename__ = "embedding_snapshot"
 
     id: Mapped[UuidPk]
-    parse_run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("parse_run.id", ondelete="RESTRICT"), nullable=False
+    parse_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("parse_run.id", ondelete="RESTRICT"), nullable=True
     )
+    corpus_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parse_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunk_strategy: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    query_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalization: Mapped[str] = mapped_column(String(32), nullable=False)
+    expected_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    index_name: Mapped[str | None] = mapped_column(String(128))
+    index_state: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[CreatedAt]
-    __table_args__ = (CheckConstraint("dimension > 0", name="embedding_dimension_positive"),)
+    __table_args__ = (
+        CheckConstraint("dimension > 0", name="embedding_dimension_positive"),
+        CheckConstraint("expected_chunk_count >= 0", name="embedding_expected_count_nonnegative"),
+        UniqueConstraint("id", "dimension", name="uq_embedding_snapshot_id_dimension"),
+    )
 
 
 class Chunk(Base):
@@ -131,6 +145,30 @@ class Chunk(Base):
         CheckConstraint("page_end >= page_start", name="chunk_page_order"),
         CheckConstraint("token_count >= 0", name="chunk_token_count_nonnegative"),
         Index("ix_chunk_parse_run_strategy_ordinal", "parse_run_id", "strategy", "ordinal"),
+    )
+
+
+class ChunkEmbedding(Base):
+    """One immutable vector for a chunk within a versioned embedding snapshot."""
+
+    __tablename__ = "chunk_embedding"
+
+    id: Mapped[UuidPk]
+    embedding_snapshot_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    chunk_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector(), nullable=False)
+    created_at: Mapped[CreatedAt]
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["embedding_snapshot_id", "dimension"],
+            ["embedding_snapshot.id", "embedding_snapshot.dimension"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("vector_dims(embedding) = dimension", name="chunk_embedding_dimension"),
+        UniqueConstraint(
+            "embedding_snapshot_id", "chunk_id", name="uq_chunk_embedding_snapshot_chunk"
+        ),
     )
 
 

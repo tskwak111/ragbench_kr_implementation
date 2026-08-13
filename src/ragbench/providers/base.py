@@ -34,6 +34,7 @@ class EmbedResponse:
     embeddings: tuple[tuple[float, ...], ...]
     raw_response: dict[str, Any]
     correlation_id: str | None = None
+    model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

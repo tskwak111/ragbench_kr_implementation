@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     upstage_solar_pro3_model_id: str = "solar-pro3"
     upstage_solar_pro4_model_id: str = "solar-pro4"
     upstage_embedding_model_id: str = "embedding-query"
+    upstage_document_embedding_model_id: str = "embedding-passage"
+    upstage_query_embedding_model_id: str = "embedding-query"
     upstage_document_parse_model_id: str = "document-parse"
     upstage_embed_2_promotion_ends_at: datetime = datetime(2026, 8, 23, tzinfo=UTC)
 

@@ -443,7 +443,10 @@ class UpstageGateway(ProviderGateway):
                 cache_hit=False,
             )
             await self._store.put(key, operation="embed", model_id=request.model_id, response=raw)
-            return EmbedResponse(result.embeddings, result.raw_response, str(correlation_id))
+            response_model = result.model_id or request.model_id
+            return EmbedResponse(
+                result.embeddings, result.raw_response, str(correlation_id), response_model
+            )
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         _reject_reserved_params(
@@ -561,7 +564,8 @@ class UpstageGateway(ProviderGateway):
             model_id=request.model_id,
             usage=Usage(request.input_tokens, 0, 0, Decimal("0")),
         )
-        return EmbedResponse(result.embeddings, result.raw_response, correlation_id)
+        response_model = result.model_id or request.model_id
+        return EmbedResponse(result.embeddings, result.raw_response, correlation_id, response_model)
 
     async def _cached_parse(self, request: ParseRequest, cached: CachedResponse) -> ParsedDocument:
         correlation_id = await self._record_cache_hit(
@@ -681,7 +685,9 @@ class UpstageGateway(ProviderGateway):
             if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
                 raise ValueError("provider response contains invalid embedding data")
             vectors.append(tuple(float(value) for value in item["embedding"]))
-        return EmbedResponse(tuple(vectors), raw)
+        raw_model = raw.get("model")
+        model_id = raw_model if isinstance(raw_model, str) else None
+        return EmbedResponse(tuple(vectors), raw, model_id=model_id)
 
     async def aclose(self) -> None:
         if self._owns_client:
