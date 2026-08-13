@@ -12,6 +12,7 @@ from types import MappingProxyType
 
 from ragbench.core.hashing import canonical_json_hash
 from ragbench.experiments.config import RetrievalExperimentConfig
+from ragbench.experiments.planner import CHUNK_STRATEGIES, PARSE_MODES, RETRIEVERS, TOP_K_VALUES
 
 SELECTION_RULE = {
     "version": "retrieval-shortlist-v1",
@@ -118,8 +119,32 @@ def select_retrieval_shortlist(
             )
             for row in outcomes
         }
-        if len(axes) != 126:
+        expected_axes = {
+            (mode, strategy, retriever, top_k)
+            for mode in PARSE_MODES
+            for strategy in CHUNK_STRATEGIES
+            for retriever in RETRIEVERS
+            for top_k in TOP_K_VALUES
+        }
+        if axes != expected_axes:
             raise ValueError("screening outcomes do not cover the exact core configuration grid")
+        parse_bindings = {
+            mode: {
+                row.config.parse_snapshot_id for row in outcomes if row.config.parse_mode == mode
+            }
+            for mode in PARSE_MODES
+        }
+        artifact_bindings: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for row in outcomes:
+            artifact_bindings.setdefault(
+                (row.config.parse_mode, row.config.chunk_strategy), set()
+            ).add((row.config.chunk_snapshot_id, row.config.embedding_snapshot_id))
+        if (
+            any(len(values) != 1 for values in parse_bindings.values())
+            or len(artifact_bindings) != 14
+            or any(len(values) != 1 for values in artifact_bindings.values())
+        ):
+            raise ValueError("core grid snapshot bindings are inconsistent")
     cohorts = {
         (
             row.config.corpus_snapshot_id,
@@ -134,7 +159,12 @@ def select_retrieval_shortlist(
         raise ValueError("screening outcomes must belong to one immutable comparison cohort")
 
     best_by_family: dict[tuple[str, str, str], ScreeningOutcome] = {}
-    for outcome in sorted(outcomes, key=_quality_key):
+    selection_pool = (
+        [outcome for outcome in outcomes if outcome.config.top_k == 5]
+        if require_complete_grid
+        else list(outcomes)
+    )
+    for outcome in sorted(selection_pool, key=_quality_key):
         family = (
             outcome.config.parse_mode,
             outcome.config.chunk_strategy,

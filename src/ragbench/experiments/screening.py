@@ -118,6 +118,7 @@ class ScreeningRunRecord:
     run_id: str
     config_hash: str
     question_snapshot_hash: str
+    expected_question_ids: tuple[str, ...] = ()
     status: Literal["running", "interrupted", "complete"] = "running"
     completed_question_ids: set[str] = field(default_factory=set)
     hits: list[PersistedRankedHit] = field(default_factory=list)
@@ -155,6 +156,7 @@ class MemoryScreeningStore:
             if (
                 existing.config_hash != record.config_hash
                 or existing.question_snapshot_hash != record.question_snapshot_hash
+                or existing.expected_question_ids != record.expected_question_ids
             ):
                 raise ValueError("run identity collides with different immutable inputs")
             if existing.status != "complete":
@@ -211,10 +213,16 @@ class FileScreeningStore(MemoryScreeningStore):
         if not path.exists():
             return None
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("schema_version") != "retrieval-checkpoint-v1":
+            raise ValueError("checkpoint schema version mismatch")
+        integrity_hash = raw.pop("integrity_hash", None)
+        if integrity_hash != canonical_json_hash(raw):
+            raise ValueError("checkpoint integrity hash mismatch")
         record = ScreeningRunRecord(
             run_id=raw["run_id"],
             config_hash=raw["config_hash"],
             question_snapshot_hash=raw["question_snapshot_hash"],
+            expected_question_ids=tuple(raw["expected_question_ids"]),
             status=raw["status"],
             completed_question_ids=set(raw["completed_question_ids"]),
             hits=[PersistedRankedHit(**hit) for hit in raw["hits"]],
@@ -222,18 +230,44 @@ class FileScreeningStore(MemoryScreeningStore):
         )
         if record.run_id != run_id:
             raise ValueError("checkpoint run identity mismatch")
+        expected = set(record.expected_question_ids)
+        if len(expected) != len(record.expected_question_ids):
+            raise ValueError("checkpoint question membership is invalid")
+        if not record.completed_question_ids <= expected:
+            raise ValueError("checkpoint completed question is outside expected membership")
+        if set(record.latencies_ms) != record.completed_question_ids or any(
+            not math.isfinite(value) or value < 0 for value in record.latencies_ms.values()
+        ):
+            raise ValueError("checkpoint latency evidence is invalid")
+        hits_by_question: dict[str, list[PersistedRankedHit]] = {}
+        for hit in record.hits:
+            hits_by_question.setdefault(hit.question_id, []).append(hit)
+            if (
+                hit.question_id not in record.completed_question_ids
+                or not math.isfinite(hit.score)
+                or not math.isfinite(hit.fused_score)
+            ):
+                raise ValueError("checkpoint hit evidence is invalid")
+        for question_id, hits in hits_by_question.items():
+            if [hit.rank for hit in hits] != list(range(1, len(hits) + 1)) or len(
+                {hit.chunk_id for hit in hits}
+            ) != len(hits):
+                raise ValueError(f"checkpoint ranking is invalid: {question_id}")
         return record
 
     def _flush(self, record: ScreeningRunRecord) -> None:
         payload = {
+            "schema_version": "retrieval-checkpoint-v1",
             "run_id": record.run_id,
             "config_hash": record.config_hash,
             "question_snapshot_hash": record.question_snapshot_hash,
+            "expected_question_ids": record.expected_question_ids,
             "status": record.status,
             "completed_question_ids": sorted(record.completed_question_ids),
             "hits": [asdict(hit) for hit in record.hits],
             "latencies_ms": record.latencies_ms,
         }
+        payload["integrity_hash"] = canonical_json_hash(payload)
         path = self._path(record.run_id)
         temporary = path.with_suffix(f".{os.getpid()}.tmp")
         with temporary.open("x", encoding="utf-8") as stream:
@@ -279,7 +313,6 @@ class FileScreeningStore(MemoryScreeningStore):
 class ScreeningResult:
     run_id: str
     evaluation: RetrievalEvaluation
-    selection_evaluation: RetrievalEvaluation
 
 
 class RetrievalScreenRunner:
@@ -369,16 +402,23 @@ class RetrievalScreenRunner:
         if retriever_name == "hybrid":
             for hit in hits:
                 evidence = hit.evidence
+                ranks = (evidence.dense_rank, evidence.sparse_rank) if evidence else ()
+                scores = (evidence.dense_score, evidence.sparse_score) if evidence else ()
                 if (
                     evidence is None
+                    or not math.isfinite(evidence.fused_score)
                     or evidence.fused_score != hit.score
                     or (evidence.dense_rank is None and evidence.sparse_rank is None)
+                    or any(rank is not None and rank <= 0 for rank in ranks)
                     or any(
-                        value is not None and not math.isfinite(value)
-                        for value in (evidence.dense_score, evidence.sparse_score)
+                        (rank is None) != (score is None)
+                        for rank, score in zip(ranks, scores, strict=True)
                     )
+                    or any(value is not None and not math.isfinite(value) for value in scores)
                 ):
                     raise ValueError("hybrid hit component evidence is invalid")
+        elif any(hit.evidence is not None for hit in hits):
+            raise ValueError("non-hybrid hits cannot carry component evidence")
         output: list[PersistedRankedHit] = []
         for hit in hits:
             evidence = hit.evidence
@@ -410,8 +450,14 @@ class RetrievalScreenRunner:
         if binding.rrf != config.rrf:
             raise ValueError("RRF binding does not match experiment config")
         run_id = self.run_identity(config, questions)
+        by_id = {question.question_id: question for question in questions.questions}
         run = self._store.begin(
-            ScreeningRunRecord(run_id, config.semantic_hash, questions.content_hash)
+            ScreeningRunRecord(
+                run_id=run_id,
+                config_hash=config.semantic_hash,
+                question_snapshot_hash=questions.content_hash,
+                expected_question_ids=tuple(sorted(by_id)),
+            )
         )
         search_filter = SearchFilter(
             config.corpus_snapshot_id,
@@ -419,9 +465,8 @@ class RetrievalScreenRunner:
             config.chunk_strategy,
             config.embedding_snapshot_id,
         )
-        by_id = {question.question_id: question for question in questions.questions}
         try:
-            retrieval_k = max(config.top_k, 5)
+            retrieval_k = config.top_k
             for question in questions.questions:
                 if question.question_id in run.completed_question_ids:
                     continue
@@ -459,6 +504,5 @@ class RetrievalScreenRunner:
             cases,
             k=config.top_k,
         )
-        selection_evaluation = aggregate_retrieval(cases, k=5)
         self._store.finish(run_id, evaluation)
-        return ScreeningResult(run_id, evaluation, selection_evaluation)
+        return ScreeningResult(run_id, evaluation)

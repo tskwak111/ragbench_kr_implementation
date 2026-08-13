@@ -143,8 +143,8 @@ async def test_screen_persists_every_hit_and_component_score_then_aggregates() -
     assert (first.dense_rank, first.sparse_rank, first.fused_score) == (2, 1, 0.75)
     assert result.evaluation.overall.macro_hit_at_k == 1.0
     assert result.evaluation.overall.micro_evidence_recall_at_k == pytest.approx(2 / 3)
-    assert result.selection_evaluation.k == 5
-    assert retriever.top_ks == [5, 5]
+    assert result.evaluation.k == 3
+    assert retriever.top_ks == [3, 3]
 
 
 @pytest.mark.asyncio
