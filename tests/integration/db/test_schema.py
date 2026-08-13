@@ -4,14 +4,18 @@ import asyncio
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from ragbench.core.money import SqlAlchemyBudgetRepository, Usage
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -146,5 +150,36 @@ async def test_initial_migration_creates_experiment_evidence_schema() -> None:
                         """
                     )
                 )
+
+        repository = SqlAlchemyBudgetRepository(async_sessionmaker(engine, expire_on_commit=False))
+        reservation = await repository.reserve_atomic(
+            correlation_id=uuid4(),
+            projected_cost=Decimal("0.100000"),
+            hard_limit=Decimal("135.000000"),
+        )
+        await repository.settle(
+            reservation.id,
+            operation="generate",
+            model_id="solar-pro4",
+            usage=Usage(10, 4, 0, Decimal("0.000008")),
+            cache_hit=False,
+        )
+        async with engine.connect() as connection:
+            transition = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT br.status, br.settled_cost_usd, au.estimated_cost_usd
+                        FROM budget_reservation br
+                        JOIN api_usage au ON au.correlation_id = br.correlation_id
+                        WHERE br.id = :reservation_id
+                        """
+                    ),
+                    {"reservation_id": reservation.id},
+                )
+            ).one()
+        assert transition.status == "settled"
+        assert transition.settled_cost_usd == Decimal("0.000008")
+        assert transition.estimated_cost_usd == Decimal("0.000008")
     finally:
         await engine.dispose()

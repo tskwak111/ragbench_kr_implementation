@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbench.core.hashing import canonical_json_hash
-from ragbench.core.money import BudgetGuard, Usage
+from ragbench.core.money import BudgetGuard, Reservation, Usage
 from ragbench.db.models import ApiCacheEntry
 from ragbench.providers.base import (
     EmbedRequest,
@@ -135,7 +135,15 @@ class SqlAlchemyProviderStore:
                 provider_model_id=model_id,
                 response_snapshot=response,
             )
-            .on_conflict_do_nothing(index_elements=[ApiCacheEntry.cache_key])
+            .on_conflict_do_update(
+                index_elements=[ApiCacheEntry.cache_key],
+                set_={
+                    "operation": operation,
+                    "provider_model_id": model_id,
+                    "response_snapshot": response,
+                    "expires_at": None,
+                },
+            )
         )
         async with self._session_factory() as session, session.begin():
             await session.execute(statement)
@@ -166,10 +174,13 @@ class UpstageGateway(ProviderGateway):
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries cannot be negative")
+        if max_concurrency <= 0:
+            raise ValueError("max_concurrency must be positive")
         self._price_book = price_book
         self._budget_guard = budget_guard
         self._store = store
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._key_locks: dict[str, asyncio.Lock] = {}
         self.max_retries = max_retries
         self.max_backoff_seconds = max_backoff_seconds
         self._sleep = sleep or asyncio.sleep
@@ -184,47 +195,28 @@ class UpstageGateway(ProviderGateway):
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         if request.max_output_tokens is None:
             raise ValueError("max_output_tokens is required to calculate an upper bound")
+        if request.max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
+        if request.input_tokens <= 0:
+            raise ValueError("input_tokens must be a positive conservative upper bound")
         _reject_reserved_params(request.provider_params, {"model", "messages", "max_tokens"})
-        key = CacheKeyParts(
-            operation="generate",
-            model_id=request.model_id,
-            provider_params={
-                **request.provider_params,
-                "max_output_tokens": request.max_output_tokens,
-            },
-            prompt_hash=canonical_json_hash(request.prompt),
-            context_hash=canonical_json_hash(request.context),
-            document_sha256=None,
-        ).digest()
-        projected = self._price_book.estimate(
-            PricingRequest(
-                operation="generate",
-                model_id=request.model_id,
-                input_tokens=request.input_tokens,
-                output_tokens=request.max_output_tokens,
-            )
-        )
-        correlation_id = uuid4()
-        reservation = await self._budget_guard.reserve(
-            correlation_id=correlation_id, projected_cost=projected
-        )
-        try:
+        key = self.cache_key_for_generate(request)
+        cached = await self._store.get(key)
+        if cached is not None:
+            return await self._cached_generation(request, cached)
+        async with self._key_lock(key):
             cached = await self._store.get(key)
             if cached is not None:
-                usage = self._generation_usage(request, cached.response)
-                await self._budget_guard.settle(
-                    reservation.id,
+                return await self._cached_generation(request, cached)
+            projected = self._price_book.estimate(
+                PricingRequest(
                     operation="generate",
                     model_id=request.model_id,
-                    usage=Usage(
-                        usage.input_tokens,
-                        usage.output_tokens,
-                        0,
-                        Decimal("0"),
-                    ),
-                    cache_hit=True,
+                    input_tokens=request.input_tokens,
+                    output_tokens=request.max_output_tokens,
                 )
-                return self._generation_response(cached.response)
+            )
+            correlation_id, reservation = await self._reserve(projected)
             payload: dict[str, Any] = {
                 "model": request.model_id,
                 "messages": [
@@ -236,16 +228,30 @@ class UpstageGateway(ProviderGateway):
                 "max_tokens": request.max_output_tokens,
                 **request.provider_params,
             }
-            raw = await self._request_json(
-                "chat/completions", payload=payload, correlation_id=correlation_id
-            )
-            await self._store.put(
-                key,
-                operation="generate",
-                model_id=request.model_id,
-                response=raw,
-            )
-            usage = self._generation_usage(request, raw)
+            try:
+                response = await self._request(
+                    "chat/completions", correlation_id=correlation_id, json_payload=payload
+                )
+            except BaseException:
+                await self._budget_guard.release(reservation.id)
+                raise
+            projected_usage = Usage(request.input_tokens, request.max_output_tokens, 0, projected)
+            raw: dict[str, Any] | None = None
+            try:
+                raw = self._decode_json(response)
+                result = self._generation_response(raw)
+                usage = self._generation_usage(request, raw)
+            except BaseException:
+                usage = self._safe_generation_usage(request, raw, projected_usage)
+                await self._budget_guard.settle(
+                    reservation.id,
+                    operation="generate",
+                    model_id=request.model_id,
+                    usage=usage,
+                    cache_hit=False,
+                    reconciliation_required=True,
+                )
+                raise
             await self._budget_guard.settle(
                 reservation.id,
                 operation="generate",
@@ -253,10 +259,24 @@ class UpstageGateway(ProviderGateway):
                 usage=usage,
                 cache_hit=False,
             )
-            return self._generation_response(raw)
-        except BaseException:
-            await self._budget_guard.release(reservation.id)
-            raise
+            await self._store.put(
+                key, operation="generate", model_id=request.model_id, response=raw
+            )
+            return result
+
+    def cache_key_for_generate(self, request: GenerateRequest) -> str:
+        """Return the deterministic key used by generation cache lookups."""
+        return CacheKeyParts(
+            operation="generate",
+            model_id=request.model_id,
+            provider_params={
+                **request.provider_params,
+                "max_output_tokens": request.max_output_tokens,
+            },
+            prompt_hash=canonical_json_hash(request.prompt),
+            context_hash=canonical_json_hash(request.context),
+            document_sha256=None,
+        ).digest()
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         _reject_reserved_params(request.provider_params, {"model", "input"})
@@ -272,24 +292,40 @@ class UpstageGateway(ProviderGateway):
             operation="embed", model_id=request.model_id, input_tokens=request.input_tokens
         )
         projected = self._price_book.estimate(price_request)
-        correlation_id, reservation = await self._reserve(projected)
-        try:
+        cached = await self._store.get(key)
+        if cached is not None:
+            return await self._cached_embedding(request, cached)
+        async with self._key_lock(key):
             cached = await self._store.get(key)
             if cached is not None:
-                await self._settle_cache_hit(
-                    reservation.id, correlation_id, "embed", request.model_id, request.input_tokens
+                return await self._cached_embedding(request, cached)
+            correlation_id, reservation = await self._reserve(projected)
+            try:
+                response = await self._request(
+                    "embeddings",
+                    json_payload={
+                        "model": request.model_id,
+                        "input": list(request.texts),
+                        **request.provider_params,
+                    },
+                    correlation_id=correlation_id,
                 )
-                return self._embedding_response(cached.response)
-            raw = await self._request_json(
-                "embeddings",
-                payload={
-                    "model": request.model_id,
-                    "input": list(request.texts),
-                    **request.provider_params,
-                },
-                correlation_id=correlation_id,
-            )
-            await self._store.put(key, operation="embed", model_id=request.model_id, response=raw)
+            except BaseException:
+                await self._budget_guard.release(reservation.id)
+                raise
+            try:
+                raw = self._decode_json(response)
+                result = self._embedding_response(raw)
+            except BaseException:
+                await self._budget_guard.settle(
+                    reservation.id,
+                    operation="embed",
+                    model_id=request.model_id,
+                    usage=Usage(request.input_tokens, 0, 0, projected),
+                    cache_hit=False,
+                    reconciliation_required=True,
+                )
+                raise
             await self._budget_guard.settle(
                 reservation.id,
                 operation="embed",
@@ -297,15 +333,13 @@ class UpstageGateway(ProviderGateway):
                 usage=Usage(request.input_tokens, 0, 0, projected),
                 cache_hit=False,
             )
-            return self._embedding_response(raw)
-        except BaseException:
-            await self._budget_guard.release(reservation.id)
-            raise
+            await self._store.put(key, operation="embed", model_id=request.model_id, response=raw)
+            return result
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         _reject_reserved_params(
             request.provider_params,
-            {"model", "mode", "document_sha256", "document_hex"},
+            {"model", "document"},
         )
         params = {"mode": request.mode, **request.provider_params}
         key = CacheKeyParts(
@@ -324,29 +358,43 @@ class UpstageGateway(ProviderGateway):
                 mode=request.mode,
             )
         )
-        correlation_id, reservation = await self._reserve(projected)
-        try:
+        cached = await self._store.get(key)
+        if cached is not None:
+            return await self._cached_parse(request, cached)
+        async with self._key_lock(key):
             cached = await self._store.get(key)
             if cached is not None:
+                return await self._cached_parse(request, cached)
+            correlation_id, reservation = await self._reserve(projected)
+            try:
+                response = await self._request(
+                    "document-digitization",
+                    correlation_id=correlation_id,
+                    data={"model": request.model_id, **request.provider_params},
+                    files={
+                        "document": (
+                            "document.bin",
+                            request.content,
+                            "application/octet-stream",
+                        )
+                    },
+                )
+            except BaseException:
+                await self._budget_guard.release(reservation.id)
+                raise
+            try:
+                raw = self._decode_json(response)
+                result = ParsedDocument(raw)
+            except BaseException:
                 await self._budget_guard.settle(
                     reservation.id,
                     operation="parse",
                     model_id=request.model_id,
-                    usage=Usage(0, 0, request.billable_pages, Decimal("0")),
-                    cache_hit=True,
+                    usage=Usage(0, 0, request.billable_pages, projected),
+                    cache_hit=False,
+                    reconciliation_required=True,
                 )
-                return ParsedDocument(cached.response)
-            raw = await self._request_json(
-                "document-ai/document-parse",
-                payload={
-                    "model": request.model_id,
-                    "document_sha256": request.document_sha256,
-                    "document_hex": request.content.hex(),
-                    **params,
-                },
-                correlation_id=correlation_id,
-            )
-            await self._store.put(key, operation="parse", model_id=request.model_id, response=raw)
+                raise
             await self._budget_guard.settle(
                 reservation.id,
                 operation="parse",
@@ -354,44 +402,76 @@ class UpstageGateway(ProviderGateway):
                 usage=Usage(0, 0, request.billable_pages, projected),
                 cache_hit=False,
             )
-            return ParsedDocument(raw)
-        except BaseException:
-            await self._budget_guard.release(reservation.id)
-            raise
+            await self._store.put(key, operation="parse", model_id=request.model_id, response=raw)
+            return result
 
-    async def _reserve(self, projected: Decimal) -> tuple[UUID, Any]:
+    async def _reserve(self, projected: Decimal) -> tuple[UUID, Reservation]:
         correlation_id = uuid4()
         reservation = await self._budget_guard.reserve(
             correlation_id=correlation_id, projected_cost=projected
         )
         return correlation_id, reservation
 
-    async def _settle_cache_hit(
-        self,
-        reservation_id: UUID,
-        correlation_id: UUID,
-        operation: str,
-        model_id: str,
-        input_tokens: int,
-    ) -> None:
-        del correlation_id
-        await self._budget_guard.settle(
-            reservation_id,
+    def _key_lock(self, cache_key: str) -> asyncio.Lock:
+        return self._key_locks.setdefault(cache_key, asyncio.Lock())
+
+    async def _record_cache_hit(self, *, operation: str, model_id: str, usage: Usage) -> None:
+        await self._budget_guard.record_usage(
+            correlation_id=uuid4(),
             operation=operation,
             model_id=model_id,
-            usage=Usage(input_tokens, 0, 0, Decimal("0")),
+            usage=usage,
             cache_hit=True,
         )
 
-    async def _request_json(
-        self, path: str, *, payload: dict[str, Any], correlation_id: UUID
-    ) -> dict[str, Any]:
+    async def _cached_generation(
+        self, request: GenerateRequest, cached: CachedResponse
+    ) -> GenerateResponse:
+        result = self._generation_response(cached.response)
+        usage = self._generation_usage(request, cached.response)
+        await self._record_cache_hit(
+            operation="generate",
+            model_id=request.model_id,
+            usage=Usage(usage.input_tokens, usage.output_tokens, 0, Decimal("0")),
+        )
+        return result
+
+    async def _cached_embedding(
+        self, request: EmbedRequest, cached: CachedResponse
+    ) -> EmbedResponse:
+        result = self._embedding_response(cached.response)
+        await self._record_cache_hit(
+            operation="embed",
+            model_id=request.model_id,
+            usage=Usage(request.input_tokens, 0, 0, Decimal("0")),
+        )
+        return result
+
+    async def _cached_parse(self, request: ParseRequest, cached: CachedResponse) -> ParsedDocument:
+        await self._record_cache_hit(
+            operation="parse",
+            model_id=request.model_id,
+            usage=Usage(0, 0, request.billable_pages, Decimal("0")),
+        )
+        return ParsedDocument(cached.response)
+
+    async def _request(
+        self,
+        path: str,
+        *,
+        correlation_id: UUID,
+        json_payload: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
             try:
                 async with self._semaphore:
                     response = await self._client.post(
                         path,
-                        json=payload,
+                        json=json_payload,
+                        data=data,
+                        files=files,
                         headers={"X-Correlation-ID": str(correlation_id)},
                     )
             except httpx.RequestError:
@@ -399,11 +479,8 @@ class UpstageGateway(ProviderGateway):
                     raise
                 await self._sleep(self._backoff(attempt, None))
                 continue
-            if response.status_code < 400:
-                decoded = response.json()
-                if not isinstance(decoded, dict):
-                    raise ValueError("provider JSON response must be an object")
-                return decoded
+            if 200 <= response.status_code < 300:
+                return response
             if response.status_code != 429 and response.status_code < 500:
                 raise ProviderHTTPError(response.status_code)
             if attempt >= self.max_retries:
@@ -418,6 +495,13 @@ class UpstageGateway(ProviderGateway):
                 },
             )
         raise RuntimeError("unreachable retry state")
+
+    @staticmethod
+    def _decode_json(response: httpx.Response) -> dict[str, Any]:
+        decoded = response.json()
+        if not isinstance(decoded, dict):
+            raise ValueError("provider JSON response must be an object")
+        return decoded
 
     def _backoff(self, attempt: int, retry_after: str | None) -> float:
         if retry_after is not None:
@@ -442,6 +526,19 @@ class UpstageGateway(ProviderGateway):
             )
         )
         return Usage(input_tokens, output_tokens, 0, cost)
+
+    def _safe_generation_usage(
+        self,
+        request: GenerateRequest,
+        raw: dict[str, Any] | None,
+        fallback: Usage,
+    ) -> Usage:
+        if raw is None:
+            return fallback
+        try:
+            return self._generation_usage(request, raw)
+        except (TypeError, ValueError):
+            return fallback
 
     @staticmethod
     def _generation_response(raw: dict[str, Any]) -> GenerateResponse:

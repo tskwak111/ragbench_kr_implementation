@@ -57,9 +57,20 @@ class BudgetRepository(Protocol):
         model_id: str,
         usage: Usage,
         cache_hit: bool,
+        reconciliation_required: bool = False,
     ) -> None: ...
 
     async def release(self, reservation_id: UUID) -> None: ...
+
+    async def record_usage(
+        self,
+        *,
+        correlation_id: UUID,
+        operation: str,
+        model_id: str,
+        usage: Usage,
+        cache_hit: bool,
+    ) -> None: ...
 
 
 @dataclass(slots=True)
@@ -108,14 +119,18 @@ class MemoryBudgetRepository:
         model_id: str,
         usage: Usage,
         cache_hit: bool,
+        reconciliation_required: bool = False,
     ) -> None:
         async with self._lock:
             reservation = self.reservations[reservation_id]
             if reservation.status != "open":
                 raise RuntimeError("only open reservations can be settled")
-            if usage.estimated_cost_usd > reservation.reserved_cost_usd:
-                raise RuntimeError("settled cost exceeds its reserved upper bound")
-            reservation.status = "settled"
+            reservation.status = (
+                "reconciliation_required"
+                if reconciliation_required
+                or usage.estimated_cost_usd > reservation.reserved_cost_usd
+                else "settled"
+            )
             reservation.settled_cost_usd = usage.estimated_cost_usd
             self.settled_cost += usage.estimated_cost_usd
             self.usages.append(
@@ -129,6 +144,19 @@ class MemoryBudgetRepository:
                 reservation.status = "released"
                 reservation.settled_cost_usd = Decimal("0")
 
+    async def record_usage(
+        self,
+        *,
+        correlation_id: UUID,
+        operation: str,
+        model_id: str,
+        usage: Usage,
+        cache_hit: bool,
+    ) -> None:
+        async with self._lock:
+            self.settled_cost += usage.estimated_cost_usd
+            self.usages.append(UsageRecord(correlation_id, operation, model_id, usage, cache_hit))
+
 
 class SqlAlchemyBudgetRepository:
     """PostgreSQL budget store serialized by a transaction-scoped advisory lock."""
@@ -138,14 +166,17 @@ class SqlAlchemyBudgetRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
+    async def _acquire_budget_lock(self, session: AsyncSession) -> None:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": self._LOCK_ID},
+        )
+
     async def reserve_atomic(
         self, *, correlation_id: UUID, projected_cost: Decimal, hard_limit: Decimal
     ) -> Reservation:
         async with self._session_factory() as session, session.begin():
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                {"lock_id": self._LOCK_ID},
-            )
+            await self._acquire_budget_lock(session)
             settled = await session.scalar(
                 select(func.coalesce(func.sum(ApiUsage.estimated_cost_usd), Decimal("0")))
             )
@@ -177,8 +208,10 @@ class SqlAlchemyBudgetRepository:
         model_id: str,
         usage: Usage,
         cache_hit: bool,
+        reconciliation_required: bool = False,
     ) -> None:
         async with self._session_factory() as session, session.begin():
+            await self._acquire_budget_lock(session)
             reservation = await session.scalar(
                 select(BudgetReservation)
                 .where(BudgetReservation.id == reservation_id)
@@ -186,9 +219,12 @@ class SqlAlchemyBudgetRepository:
             )
             if reservation is None or reservation.status != "open":
                 raise RuntimeError("only open reservations can be settled")
-            if usage.estimated_cost_usd > reservation.reserved_cost_usd:
-                raise RuntimeError("settled cost exceeds its reserved upper bound")
-            reservation.status = "settled"
+            reservation.status = (
+                "reconciliation_required"
+                if reconciliation_required
+                or usage.estimated_cost_usd > reservation.reserved_cost_usd
+                else "settled"
+            )
             reservation.settled_cost_usd = usage.estimated_cost_usd
             reservation.settled_at = datetime.now(UTC)
             session.add(
@@ -206,6 +242,7 @@ class SqlAlchemyBudgetRepository:
 
     async def release(self, reservation_id: UUID) -> None:
         async with self._session_factory() as session, session.begin():
+            await self._acquire_budget_lock(session)
             reservation = await session.scalar(
                 select(BudgetReservation)
                 .where(BudgetReservation.id == reservation_id)
@@ -215,6 +252,29 @@ class SqlAlchemyBudgetRepository:
                 reservation.status = "released"
                 reservation.settled_cost_usd = Decimal("0")
                 reservation.settled_at = datetime.now(UTC)
+
+    async def record_usage(
+        self,
+        *,
+        correlation_id: UUID,
+        operation: str,
+        model_id: str,
+        usage: Usage,
+        cache_hit: bool,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            session.add(
+                ApiUsage(
+                    correlation_id=correlation_id,
+                    operation=operation,
+                    provider_model_id=model_id,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    billable_pages=usage.billable_pages,
+                    estimated_cost_usd=usage.estimated_cost_usd,
+                    cache_hit=cache_hit,
+                )
+            )
 
 
 class BudgetGuard:
@@ -241,6 +301,7 @@ class BudgetGuard:
         model_id: str,
         usage: Usage,
         cache_hit: bool,
+        reconciliation_required: bool = False,
     ) -> None:
         await self._repository.settle(
             reservation_id,
@@ -248,7 +309,25 @@ class BudgetGuard:
             model_id=model_id,
             usage=usage,
             cache_hit=cache_hit,
+            reconciliation_required=reconciliation_required,
         )
 
     async def release(self, reservation_id: UUID) -> None:
         await self._repository.release(reservation_id)
+
+    async def record_usage(
+        self,
+        *,
+        correlation_id: UUID,
+        operation: str,
+        model_id: str,
+        usage: Usage,
+        cache_hit: bool,
+    ) -> None:
+        await self._repository.record_usage(
+            correlation_id=correlation_id,
+            operation=operation,
+            model_id=model_id,
+            usage=usage,
+            cache_hit=cache_hit,
+        )

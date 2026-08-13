@@ -1,7 +1,12 @@
 """Deterministic provider request hashing contracts."""
 
+from typing import Any
+
+import pytest
+from sqlalchemy.dialects.postgresql import dialect
+
 from ragbench.core.hashing import canonical_json_hash
-from ragbench.providers.upstage.client import CacheKeyParts
+from ragbench.providers.upstage.client import CacheKeyParts, SqlAlchemyProviderStore
 
 
 def test_canonical_hash_is_stable_across_mapping_key_order() -> None:
@@ -39,3 +44,55 @@ def test_cache_key_covers_every_billable_request_dimension_without_secret() -> N
         ).digest()
     )
     assert "secret-api-key" not in key
+
+
+class _Transaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _StatementSession:
+    def __init__(self) -> None:
+        self.statement: Any = None
+
+    async def __aenter__(self) -> "_StatementSession":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    def begin(self) -> _Transaction:
+        return _Transaction()
+
+    async def execute(self, statement: Any) -> None:
+        self.statement = statement
+
+
+class _StatementFactory:
+    def __init__(self, session: _StatementSession) -> None:
+        self.session = session
+
+    def __call__(self) -> _StatementSession:
+        return self.session
+
+
+@pytest.mark.asyncio
+async def test_sql_cache_put_replaces_expired_conflict() -> None:
+    """Catch leaving an expired unique cache row permanently unreplaceable."""
+    session = _StatementSession()
+    store = SqlAlchemyProviderStore(_StatementFactory(session))
+
+    await store.put(
+        "a" * 64,
+        operation="generate",
+        model_id="solar-pro4",
+        response={"choices": []},
+    )
+
+    rendered = str(session.statement.compile(dialect=dialect()))
+    assert "ON CONFLICT" in rendered
+    assert "DO UPDATE" in rendered
+    assert "expires_at" in rendered

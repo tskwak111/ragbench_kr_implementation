@@ -3,7 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,6 +12,7 @@ from ragbench.core.money import (
     BudgetExceededError,
     BudgetGuard,
     MemoryBudgetRepository,
+    SqlAlchemyBudgetRepository,
     Usage,
 )
 from ragbench.providers.upstage.pricing import (
@@ -129,3 +131,82 @@ async def test_failed_reservation_is_released_for_later_work() -> None:
 
     assert repository.reservations[failed.id].status == "released"
     assert repository.reservations[replacement.id].status == "settled"
+
+
+class _Transaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _PersistedReservation:
+    def __init__(self, reservation_id: UUID) -> None:
+        self.id = reservation_id
+        self.correlation_id = uuid4()
+        self.reserved_cost_usd = Decimal("1")
+        self.status = "open"
+        self.settled_cost_usd: Decimal | None = None
+        self.settled_at: datetime | None = None
+
+
+class _RecordingSession:
+    def __init__(self, reservation: _PersistedReservation) -> None:
+        self.reservation = reservation
+        self.events: list[str] = []
+
+    async def __aenter__(self) -> "_RecordingSession":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    def begin(self) -> _Transaction:
+        return _Transaction()
+
+    async def execute(self, statement: Any, params: Any = None) -> None:
+        del params
+        rendered = str(statement)
+        self.events.append("lock" if "pg_advisory_xact_lock" in rendered else "execute")
+
+    async def scalar(self, statement: Any) -> _PersistedReservation:
+        del statement
+        self.events.append("read-reservation")
+        return self.reservation
+
+    def add(self, instance: Any) -> None:
+        del instance
+        self.events.append("add-usage")
+
+
+class _RecordingFactory:
+    def __init__(self, session: _RecordingSession) -> None:
+        self.session = session
+
+    def __call__(self) -> _RecordingSession:
+        return self.session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transition", ["settle", "release"])
+async def test_sql_budget_transitions_acquire_global_lock_before_read(
+    transition: str,
+) -> None:
+    """Catch settlement/release racing reservation accounting without the shared lock."""
+    reservation = _PersistedReservation(uuid4())
+    session = _RecordingSession(reservation)
+    repository = SqlAlchemyBudgetRepository(_RecordingFactory(session))
+
+    if transition == "settle":
+        await repository.settle(
+            reservation.id,
+            operation="generate",
+            model_id="solar-pro4",
+            usage=Usage(1, 1, 0, Decimal("0.1")),
+            cache_hit=False,
+        )
+    else:
+        await repository.release(reservation.id)
+
+    assert session.events[0:2] == ["lock", "read-reservation"]
