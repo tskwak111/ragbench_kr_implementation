@@ -1,0 +1,25 @@
+schema_version: upstage-prices-v1
+verified_at: "2026-08-13T00:00:00Z"
+currency: USD
+vat_excluded: true
+models:
+  solar-pro3:
+    generation:
+      input_usd_per_million: "0.15"
+      output_usd_per_million: "0.60"
+  solar-pro4:
+    generation:
+      input_usd_per_million: "0.30"
+      output_usd_per_million: "1.20"
+  document-parse:
+    modes:
+      standard:
+        usd_per_page: "0.01"
+      enhanced:
+        usd_per_page: "0.03"
+  embedding-query:
+    embedding:
+      input_usd_per_million: "0.02"
+      promotion:
+        input_usd_per_million: "0.00"
+        ends_at_exclusive: "2026-08-24T00:00:00Z"
