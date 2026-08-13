@@ -24,6 +24,7 @@ from ragbench.providers.base import (
     ParseRequest,
 )
 from ragbench.providers.upstage.pricing import PriceBook
+from ragbench.rag.citations import GenerationSchemaError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = CliRunner()
@@ -72,6 +73,7 @@ def _services(
     secret: str | None = "secret-value-that-must-not-appear",
     live_enabled: bool = False,
     gateway: FakeGateway | None = None,
+    query_runner: Any | None = None,
 ) -> CommandServices:
     probes = PreflightProbes(
         docker=lambda: _check("docker", detail="Docker daemon available"),
@@ -88,7 +90,71 @@ def _services(
         gateway_factory=(lambda: gateway) if gateway is not None else None,
         live_enabled=lambda: live_enabled,
         now=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+        query_runner=query_runner,
     )
+
+
+def test_query_cli_returns_injected_grounded_service_contract_without_live_wiring() -> None:
+    """Catch omitting a machine-readable query path or constructing provider HTTP in the CLI."""
+    calls: list[str] = []
+
+    async def answer(question: str) -> dict[str, object]:
+        calls.append(question)
+        return {
+            "question": question,
+            "answer": "100억 원",
+            "evidence": [{"chunk_id": "chunk-1"}],
+            "citations": [{"citation_id": "C1", "chunk_id": "chunk-1"}],
+            "latency_ms": 3,
+            "usage": {"input_tokens": 21, "output_tokens": 4},
+            "experiment_id": "exp-1",
+            "config_id": "cfg-1",
+            "cached": True,
+            "model_id": "solar-pro4",
+            "correlation_id": "corr-1",
+        }
+
+    result = RUNNER.invoke(
+        build_app(_services(secret=None, query_runner=answer)),
+        ["query", "매출은?", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["매출은?"]
+    payload = json.loads(result.output)
+    assert payload["answer"] == "100억 원"
+    assert payload["citations"] == [{"citation_id": "C1", "chunk_id": "chunk-1"}]
+    assert payload["cached"] is True
+
+
+def test_query_cli_fails_closed_when_no_grounded_service_is_configured() -> None:
+    """Catch accidental direct-provider fallback when application RAG wiring is absent."""
+    result = RUNNER.invoke(build_app(_services()), ["query", "질문", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "ok": False,
+        "error": "grounded query service unavailable",
+    }
+
+
+def test_query_cli_preserves_generation_schema_error_code_without_raw_model_output() -> None:
+    """Catch erasing the stable failure classification or leaking malformed provider content."""
+    async def broken_answer(question: str) -> dict[str, object]:
+        raise GenerationSchemaError(f"malformed provider output for {question}")
+
+    result = RUNNER.invoke(
+        build_app(_services(query_runner=broken_answer)),
+        ["query", "private malformed body", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "ok": False,
+        "error": "grounded query failed",
+        "error_code": "GENERATION_SCHEMA_ERROR",
+    }
+    assert "private malformed body" not in result.output
 
 
 def test_preflight_json_reports_all_offline_checks_without_leaking_secret() -> None:

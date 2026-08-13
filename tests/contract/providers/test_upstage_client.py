@@ -84,6 +84,8 @@ async def test_identical_second_call_is_cache_hit_without_http_traffic() -> None
 
     assert first.content == "답변"
     assert second.content == "답변"
+    assert first.cache_hit is False
+    assert second.cache_hit is True
     assert route.call_count == 1
     assert [usage.cache_hit for usage in repository.usages] == [False, True]
 

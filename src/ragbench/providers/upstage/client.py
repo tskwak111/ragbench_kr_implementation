@@ -371,7 +371,9 @@ class UpstageGateway(ProviderGateway):
             await self._store.put(
                 key, operation="generate", model_id=request.model_id, response=raw
             )
-            return GenerateResponse(result.content, result.raw_response, str(correlation_id))
+            return GenerateResponse(
+                result.content, result.raw_response, str(correlation_id), cache_hit=False
+            )
 
     def cache_key_for_generate(self, request: GenerateRequest) -> str:
         """Return the deterministic key used by generation cache lookups."""
@@ -553,7 +555,7 @@ class UpstageGateway(ProviderGateway):
             model_id=request.model_id,
             usage=Usage(usage.input_tokens, usage.output_tokens, 0, Decimal("0")),
         )
-        return GenerateResponse(result.content, result.raw_response, correlation_id)
+        return GenerateResponse(result.content, result.raw_response, correlation_id, cache_hit=True)
 
     async def _cached_embedding(
         self, request: EmbedRequest, cached: CachedResponse

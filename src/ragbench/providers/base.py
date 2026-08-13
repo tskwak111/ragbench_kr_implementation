@@ -19,6 +19,7 @@ class GenerateResponse:
     content: str
     raw_response: dict[str, Any]
     correlation_id: str | None = None
+    cache_hit: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

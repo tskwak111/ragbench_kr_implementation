@@ -27,6 +27,8 @@ from ragbench.db.session import create_lock_session_factory, create_session_fact
 from ragbench.providers.base import EmbedRequest, GenerateRequest, ParseRequest, ProviderGateway
 from ragbench.providers.upstage.client import SqlAlchemyProviderStore, UpstageGateway
 from ragbench.providers.upstage.pricing import PriceBook, PriceBookError, PricingRequest
+from ragbench.rag.citations import CitationValidationError, GenerationSchemaError
+from ragbench.rag.service import RagAnswer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRICE_PATH = PROJECT_ROOT / "configs" / "prices.yaml"
@@ -90,6 +92,10 @@ class GatewayFactory(Protocol):
     def __call__(self) -> ProviderGateway: ...
 
 
+class QueryRunner(Protocol):
+    async def __call__(self, question: str) -> RagAnswer | dict[str, Any]: ...
+
+
 @dataclass(slots=True)
 class CommandServices:
     """Dependencies for a CLI instance, replaceable by deterministic offline fakes."""
@@ -101,6 +107,7 @@ class CommandServices:
     gateway_factory: GatewayFactory | None
     live_enabled: Callable[[], bool]
     now: Callable[[], datetime]
+    query_runner: QueryRunner | None = None
 
 
 def default_services() -> CommandServices:
@@ -130,6 +137,28 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
     smoke = typer.Typer(no_args_is_help=True)
     prices = typer.Typer(no_args_is_help=True)
     usage = typer.Typer(no_args_is_help=True)
+
+    @app.command()
+    def query(
+        question: str = typer.Argument(..., help="Question to answer from configured evidence."),
+        as_json: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+    ) -> None:
+        """Run the configured grounded RAG service; never construct a provider fallback."""
+        if active.query_runner is None:
+            _emit({"ok": False, "error": "grounded query service unavailable"}, as_json)
+            raise typer.Exit(code=1)
+        try:
+            result = asyncio.run(active.query_runner(question))
+        except (GenerationSchemaError, CitationValidationError) as error:
+            _emit(
+                {"ok": False, "error": "grounded query failed", "error_code": error.code},
+                as_json,
+            )
+            raise typer.Exit(code=1) from None
+        except Exception:
+            _emit({"ok": False, "error": "grounded query failed"}, as_json)
+            raise typer.Exit(code=1) from None
+        _emit(asdict(result) if isinstance(result, RagAnswer) else result, as_json)
 
     @app.command()
     def preflight(
