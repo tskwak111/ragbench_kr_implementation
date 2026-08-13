@@ -17,7 +17,7 @@ jobs:
         run: uv sync --frozen --all-groups
       - name: Guard against tracked Upstage API keys
         run: |
-          pattern='^[[:space:]]*UPSTAGE_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]'
+          pattern='^[[:space:]]*(export[[:space:]]+)?UPSTAGE_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]'
           if git grep -nE "$pattern"; then
             echo "Refusing to run with a tracked nonempty UPSTAGE_API_KEY."
             exit 1

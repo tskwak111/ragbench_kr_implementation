@@ -106,3 +106,37 @@ Output and exit: `secret guard behavior: whitespace-prefixed values rejected; em
 - `.venv/bin/mypy src/ragbench`
 - `.venv/bin/pytest -m 'not live and not gold' -q`
 - `git diff --check`
+
+## Fix Round 2: CI secret guard export-assignment regression
+
+### Root cause and implementation
+
+The prior fix anchored the dotenv assignment at the start of the line, but
+`python-dotenv` accepts the optional `export` token before a key. The guard now
+allows an optional whitespace-separated `export` prefix before `UPSTAGE_API_KEY`
+while preserving the existing nonempty-value check.
+
+### Covering executable behavior check
+
+RED command:
+
+```sh
+current_pattern='^[[:space:]]*UPSTAGE_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]'; if printf '%s\n' 'export UPSTAGE_API_KEY=secret' | grep -qE "$current_pattern"; then echo 'unexpected current guard match'; exit 1; else echo 'RED reproduced: current guard misses export assignment'; exit 1; fi
+```
+
+Output and exit: `RED reproduced: current guard misses export assignment` (exit 1).
+
+GREEN command:
+
+```sh
+pattern='^[[:space:]]*(export[[:space:]]+)?UPSTAGE_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]'; printf '%s\n' 'UPSTAGE_API_KEY=secret' 'UPSTAGE_API_KEY= secret' 'export UPSTAGE_API_KEY=secret' ' export UPSTAGE_API_KEY= secret' | grep -qE "$pattern" && [ "$(printf '%s\n' 'UPSTAGE_API_KEY=secret' 'UPSTAGE_API_KEY= secret' 'export UPSTAGE_API_KEY=secret' ' export UPSTAGE_API_KEY= secret' | grep -cE "$pattern")" -eq 4 ] && ! printf '%s\n' 'UPSTAGE_API_KEY=' 'UPSTAGE_API_KEY= # intentionally unset' 'export UPSTAGE_API_KEY=' ' export UPSTAGE_API_KEY= # intentionally unset' | grep -qE "$pattern" && ! git grep -nE "$pattern" && echo 'secret guard behavior: four nonempty direct/export forms rejected; empty/comment-only assignments allowed'
+```
+
+Output and exit: `secret guard behavior: four nonempty direct/export forms rejected; empty/comment-only assignments allowed` (exit 0).
+
+### Relevant global checks
+
+- `.venv/bin/ruff check .`
+- `.venv/bin/mypy src/ragbench`
+- `.venv/bin/pytest -m 'not live and not gold' -q`
+- `git diff --check`
