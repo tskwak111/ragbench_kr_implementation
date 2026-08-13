@@ -28,12 +28,32 @@ def live_test_skip_reason(marker_expression: str, environment: dict[str, str]) -
     return None
 
 
+def gold_tests_requested(marker_expression: str) -> bool:
+    """Return true only for an explicit positive ``-m gold`` selection."""
+    expression = marker_expression.strip()
+    return (
+        expression == "gold"
+        or expression.startswith("gold and ")
+        or expression.startswith("gold or ")
+    )
+
+
+def gold_test_skip_reason(marker_expression: str, environment: dict[str, str]) -> str | None:
+    """Keep restricted gold unavailable unless selection and environment gates both open."""
+    if not gold_tests_requested(marker_expression):
+        return "gold tests require explicit pytest -m gold selection"
+    if environment.get("ALLOW_GOLD_ACCESS") != "1":
+        return "gold tests require ALLOW_GOLD_ACCESS=1"
+    return None
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Keep normal pytest runs offline even if an operator shell has credentials."""
-    reason = live_test_skip_reason(config.option.markexpr, dict(os.environ))
-    if reason is None:
-        return
-    skip = pytest.mark.skip(reason=reason)
+    """Keep normal pytest runs offline and gold-blind even with inherited credentials."""
+    environment = dict(os.environ)
+    live_reason = live_test_skip_reason(config.option.markexpr, environment)
+    gold_reason = gold_test_skip_reason(config.option.markexpr, environment)
     for item in items:
-        if item.get_closest_marker("live") is not None:
-            item.add_marker(skip)
+        if live_reason is not None and item.get_closest_marker("live") is not None:
+            item.add_marker(pytest.mark.skip(reason=live_reason))
+        if gold_reason is not None and item.get_closest_marker("gold") is not None:
+            item.add_marker(pytest.mark.skip(reason=gold_reason))

@@ -14,12 +14,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 import typer
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbench.benchmark.splits import (
+    GoldAccessError,
+    GoldMetadata,
+    ImmutableSnapshotError,
+    authorize_gold_access,
+    load_sealed_gold,
+    public_gold_metadata,
+)
 from ragbench.core.config import Settings
 from ragbench.core.money import BudgetGuard, SqlAlchemyBudgetRepository
 from ragbench.db.models import ApiUsage
@@ -137,6 +145,7 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
     smoke = typer.Typer(no_args_is_help=True)
     prices = typer.Typer(no_args_is_help=True)
     usage = typer.Typer(no_args_is_help=True)
+    gold = typer.Typer(no_args_is_help=True)
 
     @app.command()
     def query(
@@ -208,6 +217,38 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
             _emit({"ok": False, "error": "usage status unavailable"}, as_json)
             raise typer.Exit(code=1) from None
 
+    @gold.command("verify")
+    def gold_verify(
+        sealed_path: Annotated[
+            Path, typer.Argument(help="Restricted sealed gold JSONL path.")
+        ],
+        metadata_path: Annotated[
+            Path, typer.Argument(help="Public gold metadata JSON path.")
+        ],
+        execute: bool = typer.Option(
+            False, help="Explicitly authorize a sealed integrity check; never previews content."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+    ) -> None:
+        """Verify a sealed gold snapshot while emitting public metadata only."""
+        try:
+            authorization = authorize_gold_access(command="evaluate-gold", explicit=execute)
+            metadata = GoldMetadata.model_validate_json(
+                metadata_path.read_text(encoding="utf-8")
+            )
+            load_sealed_gold(
+                sealed_path,
+                metadata=metadata,
+                authorization=authorization,
+            )
+        except GoldAccessError:
+            _emit({"ok": False, "error": "gold access denied"}, as_json)
+            raise typer.Exit(code=1) from None
+        except (ImmutableSnapshotError, OSError, ValueError):
+            _emit({"ok": False, "error": "sealed gold verification failed"}, as_json)
+            raise typer.Exit(code=1) from None
+        _emit({"ok": True, **public_gold_metadata(metadata)}, as_json)
+
     def add_smoke_command(name: str, operation: str) -> None:
         @smoke.command(name)
         def run_smoke(
@@ -268,6 +309,7 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
     app.add_typer(prices, name="prices")
     app.add_typer(smoke, name="smoke")
     app.add_typer(usage, name="usage")
+    app.add_typer(gold, name="gold")
     return app
 
 
