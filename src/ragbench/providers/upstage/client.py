@@ -36,7 +36,7 @@ from ragbench.providers.base import (
 from ragbench.providers.upstage.pricing import PriceBook, PricingRequest
 
 LOGGER = logging.getLogger(__name__)
-CACHE_SCHEMA_VERSION = "provider-cache-v1"
+CACHE_SCHEMA_VERSION = "provider-cache-v2"
 
 
 class ProviderHTTPError(RuntimeError):
@@ -65,6 +65,7 @@ class CacheKeyParts:
 @dataclass(frozen=True, slots=True)
 class CachedResponse:
     response: dict[str, Any]
+    response_hash: str = ""
     expires_at: datetime | None = None
 
 
@@ -127,6 +128,9 @@ class MemoryProviderStore:
         cached = self.entries.get(cache_key)
         if cached and cached.expires_at and cached.expires_at <= datetime.now(UTC):
             return None
+        if cached and cached.response_hash != canonical_json_hash(cached.response):
+            del self.entries[cache_key]
+            return None
         return cached
 
     async def put(
@@ -138,7 +142,8 @@ class MemoryProviderStore:
         response: dict[str, Any],
     ) -> None:
         del operation, model_id
-        self.entries[cache_key] = CachedResponse(dict(response))
+        payload = dict(response)
+        self.entries[cache_key] = CachedResponse(payload, canonical_json_hash(payload))
 
     @asynccontextmanager
     async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
@@ -187,7 +192,14 @@ class SqlAlchemyProviderStore:
                 return None
             if entry.expires_at is not None and entry.expires_at <= datetime.now(UTC):
                 return None
-            return CachedResponse(dict(entry.response_snapshot), entry.expires_at)
+            envelope = dict(entry.response_snapshot)
+            payload = envelope.get("payload")
+            response_hash = envelope.get("hash")
+            if not isinstance(payload, dict) or not isinstance(response_hash, str):
+                return None
+            if canonical_json_hash(payload) != response_hash:
+                return None
+            return CachedResponse(payload, response_hash, entry.expires_at)
 
     async def put(
         self,
@@ -203,14 +215,17 @@ class SqlAlchemyProviderStore:
                 cache_key=cache_key,
                 operation=operation,
                 provider_model_id=model_id,
-                response_snapshot=response,
+                response_snapshot={"payload": response, "hash": canonical_json_hash(response)},
             )
             .on_conflict_do_update(
                 index_elements=[ApiCacheEntry.cache_key],
                 set_={
                     "operation": operation,
                     "provider_model_id": model_id,
-                    "response_snapshot": response,
+                    "response_snapshot": {
+                        "payload": response,
+                        "hash": canonical_json_hash(response),
+                    },
                     "expires_at": None,
                 },
             )
@@ -260,14 +275,18 @@ class UpstageGateway(ProviderGateway):
         client: httpx.AsyncClient | None = None,
         sleep: Sleep | None = None,
         jitter: Jitter | None = None,
+        billing_cost_multiplier: Decimal = Decimal("1.10"),
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries cannot be negative")
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be positive")
+        if billing_cost_multiplier < 1:
+            raise ValueError("billing_cost_multiplier must be at least one")
         self._price_book = price_book
         self._budget_guard = budget_guard
         self._store = store
+        self._billing_cost_multiplier = billing_cost_multiplier
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self.max_retries = max_retries
         self.max_backoff_seconds = max_backoff_seconds
@@ -296,12 +315,14 @@ class UpstageGateway(ProviderGateway):
             cached = await self._store.get(key)
             if cached is not None:
                 return await self._cached_generation(request, cached)
-            projected = self._price_book.estimate(
-                PricingRequest(
-                    operation="generate",
-                    model_id=request.model_id,
-                    input_tokens=request.input_tokens,
-                    output_tokens=request.max_output_tokens,
+            projected = self._gross(
+                self._price_book.estimate(
+                    PricingRequest(
+                        operation="generate",
+                        model_id=request.model_id,
+                        input_tokens=request.input_tokens,
+                        output_tokens=request.max_output_tokens,
+                    )
                 )
             )
             correlation_id, reservation = await self._reserve(projected)
@@ -379,7 +400,7 @@ class UpstageGateway(ProviderGateway):
         price_request = PricingRequest(
             operation="embed", model_id=request.model_id, input_tokens=request.input_tokens
         )
-        projected = self._price_book.estimate(price_request)
+        projected = self._gross(self._price_book.estimate(price_request))
         cached = await self._store.get(key)
         if cached is not None:
             return await self._cached_embedding(request, cached)
@@ -427,9 +448,13 @@ class UpstageGateway(ProviderGateway):
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         _reject_reserved_params(
             request.provider_params,
-            {"model", "document", "mode"},
+            {"model", "document", "mode", "output_formats"},
         )
-        params = {"mode": request.mode, **request.provider_params}
+        params = {
+            "mode": request.mode,
+            "output_formats": "['html', 'markdown']",
+            **request.provider_params,
+        }
         key = CacheKeyParts(
             operation="parse",
             model_id=request.model_id,
@@ -438,12 +463,14 @@ class UpstageGateway(ProviderGateway):
             context_hash=None,
             document_sha256=request.document_sha256,
         ).digest()
-        projected = self._price_book.estimate(
-            PricingRequest(
-                operation="parse",
-                model_id=request.model_id,
-                billable_pages=request.billable_pages,
-                mode=request.mode,
+        projected = self._gross(
+            self._price_book.estimate(
+                PricingRequest(
+                    operation="parse",
+                    model_id=request.model_id,
+                    billable_pages=request.billable_pages,
+                    mode=request.mode,
+                )
             )
         )
         cached = await self._store.get(key)
@@ -499,6 +526,9 @@ class UpstageGateway(ProviderGateway):
             correlation_id=correlation_id, projected_cost=projected
         )
         return correlation_id, reservation
+
+    def _gross(self, net: Decimal) -> Decimal:
+        return (net * self._billing_cost_multiplier).quantize(Decimal("0.000001"))
 
     async def _record_cache_hit(self, *, operation: str, model_id: str, usage: Usage) -> str:
         correlation_id = uuid4()
@@ -603,12 +633,14 @@ class UpstageGateway(ProviderGateway):
             raw_usage = {}
         input_tokens = int(raw_usage.get("prompt_tokens", request.input_tokens))
         output_tokens = int(raw_usage.get("completion_tokens", request.max_output_tokens or 0))
-        cost = self._price_book.estimate(
-            PricingRequest(
-                operation="generate",
-                model_id=request.model_id,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+        cost = self._gross(
+            self._price_book.estimate(
+                PricingRequest(
+                    operation="generate",
+                    model_id=request.model_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
             )
         )
         return Usage(input_tokens, output_tokens, 0, cost)

@@ -87,6 +87,22 @@ def _response(pages: int, *, markdown: str = "ok") -> dict[str, object]:
     }
 
 
+def _provider_response(pages: int, *, model: str = "2026-08-01") -> dict[str, object]:
+    return {
+        "model": model,
+        "content": {"markdown": "whole markdown", "html": "<p>whole html</p>"},
+        "elements": [
+            {
+                "id": page,
+                "page": page,
+                "category": "paragraph",
+                "content": {"markdown": f"page {page}", "html": f"<p>{page}</p>"},
+            }
+            for page in range(1, pages + 1)
+        ],
+    }
+
+
 def _pipeline(
     snapshot: CorpusSnapshot,
     gateway: RecordingGateway,
@@ -153,7 +169,9 @@ async def test_success_persists_normalized_evidence_and_reconciles_pages(tmp_pat
     )
 
     summary = await pipeline.parse_corpus("snapshot-1", "standard")
-    checkpoint = await repository.get("snapshot-1", document.sha256, "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
 
     assert summary.succeeded_documents == 1
     assert summary.succeeded_pages == 1
@@ -168,7 +186,92 @@ async def test_success_persists_normalized_evidence_and_reconciles_pages(tmp_pat
     assert checkpoint.page_mappings == ({"page": 1, "source_page": 1},)
     assert checkpoint.raw_response_hash is not None
     assert checkpoint.latency_ms >= 0
-    assert checkpoint.cost_usd == Decimal("0.010000")
+    assert checkpoint.cost_usd == Decimal("0.011000")
+
+
+@pytest.mark.asyncio
+async def test_real_provider_schema_derives_pages_from_elements(tmp_path: Path) -> None:
+    """Catch requiring invented top-level pages/usage fields from provider output."""
+    document = _document(tmp_path, "a", 2)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    gateway = RecordingGateway([_provider_response(2)])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    pipeline = _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    )
+
+    summary = await pipeline.parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
+
+    assert summary.failed_documents == 0
+    assert checkpoint is not None
+    assert checkpoint.provider_model_version == "2026-08-01"
+    assert checkpoint.page_mappings == (
+        {"page": 1, "source_page": 1},
+        {"page": 2, "source_page": 2},
+    )
+    assert checkpoint.elements[1]["category"] == "paragraph"
+
+
+@pytest.mark.asyncio
+async def test_provider_schema_derives_content_from_elements(tmp_path: Path) -> None:
+    """Catch discarding element content when aggregate fields are absent."""
+    document = _document(tmp_path, "a", 1)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    raw = {
+        "model": "2026-08-01",
+        "elements": [
+            {
+                "page_number": 1,
+                "category": "paragraph",
+                "content": {"markdown": "element md", "html": "<p>element</p>"},
+            }
+        ],
+    }
+    gateway = RecordingGateway([raw])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    summary = await _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    ).parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
+    assert summary.failed_documents == 0
+    assert checkpoint is not None
+    assert checkpoint.markdown == "element md"
+    assert checkpoint.html == "<p>element</p>"
+
+
+@pytest.mark.asyncio
+async def test_paid_schema_failure_preserves_raw_response_and_cost(tmp_path: Path) -> None:
+    """Catch replacing paid malformed-response evidence with an empty zero-cost failure."""
+    document = _document(tmp_path, "a", 1)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    raw = {"model": "unexpected", "elements": [{"page": 1, "content": "text"}]}
+    gateway = RecordingGateway([raw])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    pipeline = _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    )
+
+    summary = await pipeline.parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "unexpected"
+    )
+
+    assert summary.failed_documents == 1
+    assert checkpoint is not None
+    assert checkpoint.status == "reconciliation_required"
+    assert checkpoint.raw_response == raw
+    assert checkpoint.raw_response_hash is not None
+    assert checkpoint.correlation_id == "correlation-test"
+    assert checkpoint.provider_model_version == "unexpected"
+    assert checkpoint.cost_usd == Decimal("0.011000")
 
 
 @pytest.mark.asyncio

@@ -49,3 +49,46 @@ run only after the Standard success/effective-corpus decision is recorded consis
 Fresh verification before commit is recorded in the task handoff. In the local environment the
 configured PostgreSQL URL is absent, so database integration tests are expected to skip; schema
 generation is still exercised through Alembic's PostgreSQL offline SQL path.
+
+## Fix round 1 — provider adapter, gross budget, and concurrency integrity
+
+- Updated the multipart provider contract to request both HTML and Markdown explicitly and made
+  `output_formats` an orchestration-reserved parameter. Normalization now accepts the provider's
+  top-level `model`, derives pages from documented element/page fields, accepts legacy
+  `model_version`, and uses declared page-count fallback only when elements are absent. A respx
+  contract passes a provider-shaped response through the real gateway and both pipeline modes.
+- Paid normalization/model/page failures now persist the untouched response, canonical hash,
+  correlation ID, resolved model/version, gross estimated cost, page evidence, and an explicit
+  `reconciliation_required` status instead of replacing already-billed evidence with nulls/zeros.
+- Added the explicit configured `billing_cost_multiplier=1.10`. Gateway reservations,
+  settlements, parser checkpoints, and smoke previews use gross enforcement cost; price-book
+  rates remain VAT-exclusive and already-settled usage is not multiplied again.
+- Parse execution opens each source no-follow, requires a regular file, reads it once, verifies the
+  byte hash immediately, and passes those exact verified bytes to `ParseRequest`. Replacement or
+  mismatch never reaches the gateway. Size and nanosecond mtime are plan inputs so observable
+  replacement invalidates prior confirmation; the execution-time byte hash remains authoritative.
+- Resume summaries now separate cached and new successes while reporting whole-corpus successful
+  document/page totals. Checkpoint lookup includes exact provider model and version.
+- Provider cache entries now carry a canonical payload hash; corrupt memory/SQL envelopes are
+  misses. Shared memory repositories coalesce concurrent pipelines. SQL repositories additionally
+  support the existing bounded, distinct NullPool lock factory and PostgreSQL advisory locks, with
+  the unique checkpoint constraint as the final cross-process guard.
+
+No provider call, paid batch, manual QA, or console reconciliation was performed in this round.
+
+Fix-round verification from the assigned worktree:
+
+```text
+ruff check .
+All checks passed!
+
+mypy src/ragbench scripts/parse_corpus.py
+Success: no issues found in 21 source files
+
+pytest -m 'not live and not gold' -q
+127 passed, 3 skipped
+```
+
+The three skips are the live provider smoke and two PostgreSQL integration cases because no test
+database URL was configured. The complete Alembic upgrade was also generated successfully through
+the offline PostgreSQL SQL path. No skipped result is represented as executed evidence.

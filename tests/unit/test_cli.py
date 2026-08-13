@@ -140,7 +140,7 @@ def test_smoke_dry_run_reports_bounded_projection_without_constructing_gateway()
         "command": "smoke solar",
         "dry_run": True,
         "model_id": "solar-pro4",
-        "projected_max_usd": "0.000246",
+        "projected_max_usd": "0.000271",
         "requires": ["--execute", "--approve", "RUN_LIVE_UPSTAGE_TESTS=1", "UPSTAGE_API_KEY"],
     }
 

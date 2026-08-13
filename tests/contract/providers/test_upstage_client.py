@@ -11,7 +11,7 @@ import httpx
 import pytest
 import respx
 
-from ragbench.core.money import BudgetGuard, MemoryBudgetRepository
+from ragbench.core.money import BudgetExceededError, BudgetGuard, MemoryBudgetRepository
 from ragbench.providers.upstage.client import (
     EmbedRequest,
     GenerateRequest,
@@ -33,6 +33,7 @@ def _gateway(
     store: ProviderStore | None = None,
     sleep: object | None = None,
     max_retries: int = 3,
+    billing_cost_multiplier: Decimal = Decimal("1.10"),
 ) -> UpstageGateway:
     return UpstageGateway(
         api_key="secret-api-key",
@@ -42,6 +43,7 @@ def _gateway(
             repository or MemoryBudgetRepository(), hard_limit=Decimal("135.00")
         ),
         store=store or MemoryProviderStore(),
+        billing_cost_multiplier=billing_cost_multiplier,
         max_retries=max_retries,
         sleep=sleep if callable(sleep) else None,
         jitter=lambda upper_bound: upper_bound,
@@ -316,11 +318,13 @@ async def test_parse_uses_official_document_digitization_multipart_contract() ->
     assert 'name="model"' in body and "document-parse" in body
     assert 'name="ocr"' in body and "force" in body
     assert 'name="base64_encoding"' in body and "['table']" in body
+    assert 'name="output_formats"' in body
+    assert "html" in body and "markdown" in body
 
 
 @pytest.mark.parametrize(
     ("mode", "expected_cost"),
-    [("standard", Decimal("0.010000")), ("enhanced", Decimal("0.030000"))],
+    [("standard", Decimal("0.011000")), ("enhanced", Decimal("0.033000"))],
 )
 @pytest.mark.asyncio
 @respx.mock
@@ -367,6 +371,50 @@ async def test_parse_provider_params_cannot_override_mode() -> None:
             )
         )
     await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_parse_provider_params_cannot_override_output_formats() -> None:
+    """Catch a caller requesting less evidence than the pipeline requires."""
+    gateway = _gateway()
+    with pytest.raises(ValueError, match="reserved provider parameter.*output_formats"):
+        await gateway.parse(
+            ParseRequest(
+                model_id="document-parse",
+                document_sha256="9" * 64,
+                content=b"%PDF-formats",
+                billable_pages=1,
+                provider_params={"output_formats": "['text']"},
+            )
+        )
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_vat_inclusive_reservation_rejects_work_that_net_price_would_allow() -> None:
+    """Catch enforcing the hard cap against VAT-exclusive rates."""
+    repository = MemoryBudgetRepository(settled_cost=Decimal("134.9895"))
+    gateway = _gateway(repository=repository)
+    with pytest.raises(BudgetExceededError, match="budget"):
+        await gateway.parse(
+            ParseRequest(
+                model_id="document-parse",
+                document_sha256="8" * 64,
+                content=b"%PDF-vat",
+                billable_pages=1,
+            )
+        )
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_memory_cache_rejects_corrupted_response_envelope() -> None:
+    """Catch returning cached provider bytes after their canonical hash changes."""
+    store = MemoryProviderStore()
+    await store.put("key", operation="parse", model_id="document-parse", response={"a": 1})
+    store.entries["key"].response["a"] = 2
+    assert await store.get("key") is None
+    assert "key" not in store.entries
 
 
 @pytest.mark.asyncio

@@ -289,7 +289,10 @@ def _smoke_request(
         )
     else:  # pragma: no cover - private fixed command registration
         raise ValueError(f"unknown smoke operation: {operation}")
-    return request, services.price_book.estimate(pricing)
+    net = services.price_book.estimate(pricing)
+    return request, (net * services.settings.billing_cost_multiplier).quantize(
+        Decimal("0.000001")
+    )
 
 
 def _execution_blockers(services: CommandServices, approve: bool) -> list[str]:
@@ -485,6 +488,7 @@ def _build_gateway(settings: Settings) -> ProviderGateway:
                 hard_limit=settings.max_project_budget_usd,
             ),
             store=store,
+            billing_cost_multiplier=settings.billing_cost_multiplier,
             max_concurrency=settings.max_concurrency,
             max_retries=0,
         )

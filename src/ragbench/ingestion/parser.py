@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+import hashlib
+import os
+import stat
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,6 +25,13 @@ from ragbench.providers.base import ParseRequest, ProviderGateway
 from ragbench.providers.upstage.pricing import MONEY_QUANTUM, PriceBook, PricingRequest
 
 ParseMode = Literal["standard", "enhanced"]
+_SQL_LOCAL_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+@dataclass(slots=True)
+class _Flight:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 class ParseIntegrityError(RuntimeError):
@@ -50,7 +61,7 @@ class ParseCheckpoint:
     provider_model_id: str
     provider_model_version: str
     mode: ParseMode
-    status: Literal["succeeded", "failed"]
+    status: Literal["succeeded", "failed", "reconciliation_required"]
     raw_response: dict[str, Any] | None
     raw_response_hash: str | None
     markdown: str
@@ -66,21 +77,16 @@ class ParseCheckpoint:
     def cache_integrity_ok(self) -> bool:
         if self.status != "succeeded" or self.raw_response is None or not self.raw_response_hash:
             return False
-        content = self.raw_response.get("content")
+        content = _content_fields(self.raw_response)
         elements = self.raw_response.get("elements")
-        pages = self.raw_response.get("pages")
-        if (
-            not isinstance(content, dict)
-            or not isinstance(elements, list)
-            or not isinstance(pages, list)
-        ):
+        if not isinstance(elements, list):
             return False
         return (
             canonical_json_hash(self.raw_response) == self.raw_response_hash
-            and self.markdown == str(content.get("markdown", ""))
-            and self.html == str(content.get("html", ""))
+            and self.markdown == content[0]
+            and self.html == content[1]
             and self.elements == tuple(dict(item) for item in elements if isinstance(item, dict))
-            and self.page_mappings == tuple(dict(item) for item in pages if isinstance(item, dict))
+            and self.page_mappings == _page_mappings(self.raw_response, self.expected_pages)
         )
 
     @classmethod
@@ -97,15 +103,11 @@ class ParseCheckpoint:
             "content": {"markdown": "cached", "html": "<p>cached</p>"},
             "elements": [],
             "pages": [
-                {"page": page, "source_page": page}
-                for page in range(1, document.page_count + 1)
+                {"page": page, "source_page": page} for page in range(1, document.page_count + 1)
             ],
             "usage": {"pages": document.page_count},
         }
-        content = payload.get("content", {})
-        assert isinstance(content, dict)
-        pages = payload.get("pages", [])
-        assert isinstance(pages, list)
+        markdown, html = _content_fields(payload)
         elements = payload.get("elements", [])
         assert isinstance(elements, list)
         return cls(
@@ -114,15 +116,15 @@ class ParseCheckpoint:
             document.sha256,
             document.page_count,
             "document-parse",
-            str(payload.get("model_version", "v1")),
+            _provider_version(payload) or "v1",
             mode,
             "succeeded",
             payload,
             canonical_json_hash(payload),
-            str(content.get("markdown", "")),
-            str(content.get("html", "")),
+            markdown,
+            html,
             tuple(dict(item) for item in elements),
-            tuple(dict(item) for item in pages),
+            _page_mappings(payload, document.page_count),
             0,
             Decimal("0"),
         )
@@ -130,26 +132,54 @@ class ParseCheckpoint:
 
 class ParseRepository(Protocol):
     async def get(
-        self, snapshot_id: str, source_sha256: str, mode: ParseMode
+        self,
+        snapshot_id: str,
+        source_sha256: str,
+        mode: ParseMode,
+        provider_model_id: str,
+        provider_model_version: str,
     ) -> ParseCheckpoint | None: ...
 
     async def put(self, checkpoint: ParseCheckpoint) -> None: ...
+
+    def singleflight(self, identity: str) -> AbstractAsyncContextManager[None]: ...
 
 
 class MemoryParseRepository:
     """Deterministic checkpoint repository for offline orchestration tests."""
 
     def __init__(self) -> None:
-        self.checkpoints: dict[tuple[str, str, ParseMode], ParseCheckpoint] = {}
+        self.checkpoints: dict[tuple[str, str, ParseMode, str, str], ParseCheckpoint] = {}
         self._lock = asyncio.Lock()
+        self._flight_locks: dict[str, _Flight] = {}
 
     async def get(
-        self, snapshot_id: str, source_sha256: str, mode: ParseMode
+        self,
+        snapshot_id: str,
+        source_sha256: str,
+        mode: ParseMode,
+        provider_model_id: str,
+        provider_model_version: str,
     ) -> ParseCheckpoint | None:
-        return self.checkpoints.get((snapshot_id, source_sha256, mode))
+        matches = [
+            value
+            for key, value in self.checkpoints.items()
+            if key[:3] == (snapshot_id, source_sha256, mode)
+        ]
+        matches = [value for value in matches if value.provider_model_id == provider_model_id]
+        matches = [
+            value for value in matches if value.provider_model_version == provider_model_version
+        ]
+        return matches[-1] if matches else None
 
     async def put(self, checkpoint: ParseCheckpoint) -> None:
-        key = (checkpoint.snapshot_id, checkpoint.source_sha256, checkpoint.mode)
+        key = (
+            checkpoint.snapshot_id,
+            checkpoint.source_sha256,
+            checkpoint.mode,
+            checkpoint.provider_model_id,
+            checkpoint.provider_model_version,
+        )
         async with self._lock:
             self.checkpoints[key] = checkpoint
 
@@ -160,11 +190,17 @@ class MemoryParseRepository:
         await self.put(replace(checkpoint, provider_model_version="2026-08-01"))
 
     def corrupt_raw_response(self, snapshot_id: str, source_sha256: str, mode: ParseMode) -> None:
-        key = (snapshot_id, source_sha256, mode)
-        checkpoint = self.checkpoints[key]
+        checkpoint = self._find(snapshot_id, source_sha256, mode)
         assert checkpoint.raw_response is not None
         corrupt = dict(checkpoint.raw_response)
         corrupt["corrupted"] = True
+        key = (
+            snapshot_id,
+            source_sha256,
+            mode,
+            checkpoint.provider_model_id,
+            checkpoint.provider_model_version,
+        )
         self.checkpoints[key] = replace(checkpoint, raw_response=corrupt)
 
     def replace_page_mappings(
@@ -174,28 +210,82 @@ class MemoryParseRepository:
         mode: ParseMode,
         pages: tuple[dict[str, Any], ...],
     ) -> None:
-        key = (snapshot_id, source_sha256, mode)
-        self.checkpoints[key] = replace(self.checkpoints[key], page_mappings=pages)
+        checkpoint = self._find(snapshot_id, source_sha256, mode)
+        key = (
+            snapshot_id,
+            source_sha256,
+            mode,
+            checkpoint.provider_model_id,
+            checkpoint.provider_model_version,
+        )
+        self.checkpoints[key] = replace(checkpoint, page_mappings=pages)
+
+    def _find(self, snapshot_id: str, source_sha256: str, mode: ParseMode) -> ParseCheckpoint:
+        return next(
+            value
+            for key, value in self.checkpoints.items()
+            if key[:3] == (snapshot_id, source_sha256, mode)
+        )
+
+    @asynccontextmanager
+    async def singleflight(self, identity: str) -> AsyncIterator[None]:
+        flight = self._flight_locks.setdefault(identity, _Flight(asyncio.Lock()))
+        flight.users += 1
+        acquired = False
+        try:
+            await flight.lock.acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                flight.lock.release()
+            flight.users -= 1
+            if flight.users == 0 and self._flight_locks.get(identity) is flight:
+                del self._flight_locks[identity]
+
+    @property
+    def singleflight_lock_count(self) -> int:
+        return len(self._flight_locks)
 
 
 class SqlAlchemyParseRepository:
     """PostgreSQL implementation of atomic, idempotent parse checkpoints."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        lock_session_factory: async_sessionmaker[AsyncSession] | None = None,
+        max_lock_connections: int = 2,
+    ) -> None:
+        if max_lock_connections <= 0:
+            raise ValueError("max_lock_connections must be positive")
         self._session_factory = session_factory
+        self._lock_session_factory = lock_session_factory
+        self._lock_permits = asyncio.Semaphore(max_lock_connections)
 
     async def get(
-        self, snapshot_id: str, source_sha256: str, mode: ParseMode
+        self,
+        snapshot_id: str,
+        source_sha256: str,
+        mode: ParseMode,
+        provider_model_id: str,
+        provider_model_version: str,
     ) -> ParseCheckpoint | None:
         async with self._session_factory() as session:
+            predicates = [
+                ParseRun.corpus_snapshot_id == snapshot_id,
+                Document.sha256 == source_sha256,
+                ParseRun.mode == mode,
+            ]
+            predicates.append(ParseRun.provider_model_id == provider_model_id)
+            predicates.append(ParseRun.provider_model_version == provider_model_version)
             row = (
                 await session.execute(
                     select(ParseRun, Document)
                     .join(Document, Document.id == ParseRun.document_id)
                     .where(
-                        ParseRun.corpus_snapshot_id == snapshot_id,
-                        Document.sha256 == source_sha256,
-                        ParseRun.mode == mode,
+                        *predicates,
                     )
                     .order_by(ParseRun.created_at.desc())
                     .limit(1)
@@ -213,7 +303,7 @@ class SqlAlchemyParseRepository:
             run.provider_model_id,
             run.provider_model_version,
             _mode(run.mode),
-            "succeeded" if run.status == "succeeded" else "failed",
+            run.status,
             dict(run.raw_response) if run.raw_response is not None else None,
             run.raw_response_hash,
             run.markdown,
@@ -278,6 +368,26 @@ class SqlAlchemyParseRepository:
                 )
             )
 
+    @asynccontextmanager
+    async def singleflight(self, identity: str) -> AsyncIterator[None]:
+        lock = _SQL_LOCAL_LOCKS.setdefault(identity, asyncio.Lock())
+        async with lock:
+            if self._lock_session_factory is None:
+                yield
+                return
+            lock_id = int.from_bytes(
+                hashlib.sha256(identity.encode()).digest()[:8], "big", signed=True
+            )
+            async with (
+                self._lock_permits,
+                self._lock_session_factory() as session,
+                session.begin(),
+            ):
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id}
+                )
+                yield
+
 
 @dataclass(frozen=True, slots=True)
 class PlannedDocument:
@@ -285,6 +395,8 @@ class PlannedDocument:
     source_sha256: str
     pages: int
     cache_hit: bool
+    source_size: int
+    source_mtime_ns: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +432,9 @@ class ParseSummary:
     total_documents: int
     total_pages: int
     cache_hits: int
+    cached_successes: int
+    cached_success_pages: int
+    new_successes: int
     succeeded_documents: int
     succeeded_pages: int
     failed_documents: int
@@ -368,9 +483,7 @@ class ParserPipeline:
         self._now = now
         self._authorization = authorization
 
-    async def plan_corpus(
-        self, snapshot_id: str, mode: str, resume: bool = True
-    ) -> ParsePlan:
+    async def plan_corpus(self, snapshot_id: str, mode: str, resume: bool = True) -> ParsePlan:
         selected_mode = _mode(mode)
         snapshot = self._snapshot(snapshot_id)
         if selected_mode == "enhanced":
@@ -378,7 +491,9 @@ class ParserPipeline:
         planned: list[PlannedDocument] = []
         corrupt = 0
         for document in snapshot.documents:
-            checkpoint = await self._repository.get(snapshot_id, document.sha256, selected_mode)
+            checkpoint = await self._repository.get(
+                snapshot_id, document.sha256, selected_mode, self._model_id, self._model_version
+            )
             valid = bool(
                 resume
                 and checkpoint
@@ -387,8 +502,16 @@ class ParserPipeline:
             )
             if resume and checkpoint and checkpoint.status == "succeeded" and not valid:
                 corrupt += 1
+            source_size, source_mtime_ns = _source_metadata(document)
             planned.append(
-                PlannedDocument(document.document_id, document.sha256, document.page_count, valid)
+                PlannedDocument(
+                    document.document_id,
+                    document.sha256,
+                    document.page_count,
+                    valid,
+                    source_size,
+                    source_mtime_ns,
+                )
             )
         new_documents = [item for item in planned if not item.cache_hit]
         billable_pages = sum(item.pages for item in new_documents)
@@ -438,9 +561,7 @@ class ParserPipeline:
             plan_hash,
         )
 
-    async def parse_corpus(
-        self, snapshot_id: str, mode: str, resume: bool = True
-    ) -> ParseSummary:
+    async def parse_corpus(self, snapshot_id: str, mode: str, resume: bool = True) -> ParseSummary:
         plan = await self.plan_corpus(snapshot_id, mode, resume)
         self._price_book.verify_paid_batch(now=self._now())
         if self._authorization is None or self._authorization.confirmed_plan_hash != plan.plan_hash:
@@ -450,55 +571,93 @@ class ParserPipeline:
         snapshot = self._snapshot(snapshot_id)
         by_hash = {document.sha256: document for document in snapshot.documents}
         failures: list[ParseFailure] = []
-        successes = 0
-        succeeded_pages = 0
+        new_successes = 0
+        new_success_pages = 0
+        dynamic_cache_hits = sum(item.cache_hit for item in plan.documents)
+        dynamic_cached_pages = sum(item.pages for item in plan.documents if item.cache_hit)
         for item in plan.documents:
             if item.cache_hit:
                 continue
             document = by_hash[item.source_sha256]
-            started = perf_counter()
-            try:
-                response = await self._gateway.parse(
-                    ParseRequest(
-                        model_id=self._model_id,
-                        document_sha256=document.sha256,
-                        content=document.local_path.read_bytes(),
-                        billable_pages=document.page_count,
-                        mode=plan.mode,
+            identity = canonical_json_hash(
+                [snapshot_id, document.sha256, plan.mode, self._model_id, self._model_version]
+            )
+            async with self._repository.singleflight(identity):
+                existing = await self._repository.get(
+                    snapshot_id, document.sha256, plan.mode, self._model_id, self._model_version
+                )
+                if resume and existing and existing.cache_integrity_ok:
+                    dynamic_cache_hits += 1
+                    dynamic_cached_pages += document.page_count
+                    continue
+                started = perf_counter()
+                response = None
+                try:
+                    source_bytes = _read_verified_source(document)
+                    response = await self._gateway.parse(
+                        ParseRequest(
+                            model_id=self._model_id,
+                            document_sha256=document.sha256,
+                            content=source_bytes,
+                            billable_pages=document.page_count,
+                            mode=plan.mode,
+                        )
                     )
-                )
-                latency_ms = max(0, round((perf_counter() - started) * 1000))
-                checkpoint = self._normalize(
-                    snapshot, document, plan.mode, response.raw_response, response.correlation_id,
-                    latency_ms,
-                )
-                await self._repository.put(checkpoint)
-                successes += 1
-                succeeded_pages += document.page_count
-            except Exception as error:
-                latency_ms = max(0, round((perf_counter() - started) * 1000))
-                await self._repository.put(
-                    ParseCheckpoint(
-                        snapshot_id,
-                        document.document_id,
-                        document.sha256,
-                        document.page_count,
-                        self._model_id,
-                        self._model_version,
+                    latency_ms = max(0, round((perf_counter() - started) * 1000))
+                    checkpoint = self._normalize(
+                        snapshot,
+                        document,
                         plan.mode,
-                        "failed",
-                        None,
-                        None,
-                        "",
-                        "",
-                        (),
-                        (),
+                        response.raw_response,
+                        response.correlation_id,
                         latency_ms,
-                        Decimal("0"),
-                        error=f"{type(error).__name__}: {error}",
                     )
-                )
-                failures.append(ParseFailure(document.document_id, str(error)))
+                    await self._repository.put(checkpoint)
+                    new_successes += 1
+                    new_success_pages += document.page_count
+                except Exception as error:
+                    latency_ms = max(0, round((perf_counter() - started) * 1000))
+                    raw = response.raw_response if response is not None else None
+                    paid = raw is not None
+                    version = _provider_version(raw) if raw is not None else None
+                    await self._repository.put(
+                        ParseCheckpoint(
+                            snapshot_id,
+                            document.document_id,
+                            document.sha256,
+                            document.page_count,
+                            self._model_id,
+                            version or self._model_version,
+                            plan.mode,
+                            "reconciliation_required" if paid else "failed",
+                            dict(raw) if raw is not None else None,
+                            canonical_json_hash(raw) if raw is not None else None,
+                            *_content_fields(raw or {}),
+                            tuple(
+                                dict(value)
+                                for value in (raw or {}).get("elements", [])
+                                if isinstance(value, dict)
+                            ),
+                            _page_mappings(raw or {}, document.page_count) if paid else (),
+                            latency_ms,
+                            _money(
+                                self._price_book.estimate(
+                                    PricingRequest(
+                                        operation="parse",
+                                        model_id=self._model_id,
+                                        billable_pages=document.page_count,
+                                        mode=plan.mode,
+                                    )
+                                )
+                                * (Decimal("1") + self._vat_buffer)
+                            )
+                            if paid
+                            else Decimal("0"),
+                            response.correlation_id if response is not None else None,
+                            f"{type(error).__name__}: {error}",
+                        )
+                    )
+                    failures.append(ParseFailure(document.document_id, str(error)))
         failed_ids = {failure.document_id for failure in failures}
         return ParseSummary(
             snapshot_id,
@@ -506,9 +665,12 @@ class ParserPipeline:
             plan.plan_hash,
             len(plan.documents),
             sum(item.pages for item in plan.documents),
-            sum(item.cache_hit for item in plan.documents),
-            successes,
-            succeeded_pages,
+            dynamic_cache_hits,
+            dynamic_cache_hits,
+            dynamic_cached_pages,
+            new_successes,
+            dynamic_cache_hits + new_successes,
+            dynamic_cached_pages + new_success_pages,
             len(failures),
             sum(item.pages for item in plan.documents if item.document_id in failed_ids),
             plan.corrupt_checkpoints,
@@ -518,14 +680,19 @@ class ParserPipeline:
 
     async def _require_standard_parity(self, snapshot: CorpusSnapshot) -> None:
         for document in snapshot.documents:
-            standard = await self._repository.get(snapshot.snapshot_id, document.sha256, "standard")
+            standard = await self._repository.get(
+                snapshot.snapshot_id,
+                document.sha256,
+                "standard",
+                self._model_id,
+                self._model_version,
+            )
             if standard is None:
                 raise ParseIntegrityError(
                     f"enhanced mode requires successful Standard source {document.document_id}"
                 )
             page_set = {
-                int(item.get("source_page", item.get("page", 0)))
-                for item in standard.page_mappings
+                int(item.get("source_page", item.get("page", 0))) for item in standard.page_mappings
             }
             if page_set != set(range(1, document.page_count + 1)):
                 raise ParseIntegrityError(
@@ -549,28 +716,29 @@ class ParserPipeline:
         correlation_id: str | None,
         latency_ms: int,
     ) -> ParseCheckpoint:
-        if str(raw.get("model_version", "")) != self._model_version:
+        resolved_version = _provider_version(raw)
+        if resolved_version != self._model_version:
             raise ParseIntegrityError("provider model version differs from the approved plan")
-        content = raw.get("content")
-        pages = raw.get("pages")
         elements = raw.get("elements")
-        usage = raw.get("usage")
-        if not isinstance(content, dict) or not isinstance(pages, list):
-            raise ParseIntegrityError("provider response lacks content or page mappings")
         if not isinstance(elements, list) or not all(isinstance(item, dict) for item in elements):
             raise ParseIntegrityError("provider response elements are malformed")
-        if not isinstance(usage, dict) or usage.get("pages") != document.page_count:
-            raise ParseIntegrityError("provider billable page count does not match the corpus")
-        source_pages = {int(item.get("source_page", item.get("page", 0))) for item in pages}
+        markdown, html = _content_fields(raw)
+        if not markdown and not html and not elements:
+            raise ParseIntegrityError("provider response contains no recognized parse content")
+        mappings = _page_mappings(raw, document.page_count)
+        source_pages = {int(item["source_page"]) for item in mappings}
         if source_pages != set(range(1, document.page_count + 1)):
             raise ParseIntegrityError("provider page count or page set does not match the corpus")
-        cost = self._price_book.estimate(
-            PricingRequest(
-                operation="parse",
-                model_id=self._model_id,
-                billable_pages=document.page_count,
-                mode=mode,
+        cost = _money(
+            self._price_book.estimate(
+                PricingRequest(
+                    operation="parse",
+                    model_id=self._model_id,
+                    billable_pages=document.page_count,
+                    mode=mode,
+                )
             )
+            * (Decimal("1") + self._vat_buffer)
         )
         return ParseCheckpoint(
             snapshot.snapshot_id,
@@ -578,23 +746,21 @@ class ParserPipeline:
             document.sha256,
             document.page_count,
             self._model_id,
-            self._model_version,
+            resolved_version,
             mode,
             "succeeded",
             dict(raw),
             canonical_json_hash(raw),
-            str(content.get("markdown", "")),
-            str(content.get("html", "")),
+            markdown,
+            html,
             tuple(dict(item) for item in elements),
-            tuple(dict(item) for item in pages if isinstance(item, dict)),
+            mappings,
             latency_ms,
             cost,
             correlation_id,
         )
 
-    def _checkpoint_matches(
-        self, checkpoint: ParseCheckpoint, document: DocumentRecord
-    ) -> bool:
+    def _checkpoint_matches(self, checkpoint: ParseCheckpoint, document: DocumentRecord) -> bool:
         return (
             checkpoint.source_sha256 == document.sha256
             and checkpoint.expected_pages == document.page_count
@@ -617,6 +783,104 @@ def _mode(value: str) -> ParseMode:
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(MONEY_QUANTUM, rounding=ROUND_CEILING)
+
+
+def _provider_version(raw: dict[str, Any] | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.get("model", raw.get("model_version"))
+    return str(value) if isinstance(value, str) and value else None
+
+
+def _content_fields(raw: dict[str, Any]) -> tuple[str, str]:
+    content = raw.get("content")
+    markdown = raw.get("markdown", "")
+    html = raw.get("html", "")
+    if isinstance(content, dict):
+        markdown = content.get("markdown", markdown)
+        html = content.get("html", html)
+    elif isinstance(content, str) and not markdown:
+        markdown = content
+    element_markdown: list[str] = []
+    element_html: list[str] = []
+    elements = raw.get("elements")
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            element_content = element.get("content")
+            if isinstance(element_content, dict):
+                candidate_markdown = element_content.get("markdown")
+                candidate_html = element_content.get("html")
+            else:
+                candidate_markdown = element_content
+                candidate_html = None
+            if isinstance(candidate_markdown, str) and candidate_markdown:
+                element_markdown.append(candidate_markdown)
+            if isinstance(candidate_html, str) and candidate_html:
+                element_html.append(candidate_html)
+    if not markdown:
+        markdown = "\n\n".join(element_markdown)
+    if not html:
+        html = "\n".join(element_html)
+    return (
+        markdown if isinstance(markdown, str) else "",
+        html if isinstance(html, str) else "",
+    )
+
+
+def _page_mappings(raw: dict[str, Any], expected_pages: int) -> tuple[dict[str, Any], ...]:
+    candidates = raw.get("pages")
+    mappings: list[dict[str, Any]] = []
+    if isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            page = item.get("source_page", item.get("page_number", item.get("page")))
+            if isinstance(page, int) and page > 0:
+                mappings.append({"page": page, "source_page": page})
+    elements = raw.get("elements")
+    if not mappings and isinstance(elements, list):
+        for item in elements:
+            if not isinstance(item, dict):
+                continue
+            page = item.get("page", item.get("page_number"))
+            if isinstance(page, int) and page > 0:
+                mappings.append({"page": page, "source_page": page})
+    if not mappings and not elements:
+        usage = raw.get("usage")
+        count = usage.get("pages") if isinstance(usage, dict) else raw.get("page_count")
+        if count == expected_pages:
+            mappings = [
+                {"page": page, "source_page": page} for page in range(1, expected_pages + 1)
+            ]
+    unique = {item["source_page"]: item for item in mappings}
+    return tuple(unique[key] for key in sorted(unique))
+
+
+def _read_verified_source(document: DocumentRecord) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(document.local_path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ParseIntegrityError("source is not a regular file")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    payload = b"".join(chunks)
+    if hashlib.sha256(payload).hexdigest() != document.sha256:
+        raise ParseIntegrityError("source bytes no longer match the approved manifest")
+    return payload
+
+
+def _source_metadata(document: DocumentRecord) -> tuple[int, int]:
+    metadata = document.local_path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ParseIntegrityError("source is not a regular file")
+    return metadata.st_size, metadata.st_mtime_ns
 
 
 def execution_blockers(

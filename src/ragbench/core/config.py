@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Self
 
-from pydantic import PositiveInt, model_validator
+from pydantic import Field, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     upstage_base_url: str = "https://api.upstage.ai/v1"
 
     max_project_budget_usd: Decimal = Decimal("135.00")
+    billing_cost_multiplier: Decimal = Field(default=Decimal("1.10"), ge=1)
     max_concurrency: int = 5
     max_lock_connections: PositiveInt = 2
     max_retries: int = 5

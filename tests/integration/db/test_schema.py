@@ -229,10 +229,16 @@ async def test_parse_checkpoint_repository_round_trips_complete_evidence() -> No
         await repository.put(checkpoint)
         await repository.put(checkpoint)
 
-        restored = await repository.get("a" * 64, "b" * 64, "standard")
+        restored = await repository.get(
+            "a" * 64, "b" * 64, "standard", "document-parse", "v1"
+        )
+        wrong_version = await repository.get(
+            "a" * 64, "b" * 64, "standard", "document-parse", "v2"
+        )
         async with engine.connect() as connection:
             count = await connection.scalar(text("SELECT count(*) FROM parse_run"))
         assert count == 1
         assert restored == checkpoint
+        assert wrong_version is None
     finally:
         await engine.dispose()

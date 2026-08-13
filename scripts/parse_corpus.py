@@ -67,12 +67,17 @@ async def _run(args: argparse.Namespace) -> int:
         raise RuntimeError("--snapshot-id does not match the manifest content")
     snapshot = CorpusSnapshot(args.snapshot_id, manifest.documents)
     price_book = PriceBook.from_yaml(PROJECT_ROOT / "configs" / "prices.yaml")
+    billing_cost_multiplier = Decimal("1") + args.vat_buffer
     session_factory = create_session_factory(settings)
     lock_factory = create_lock_session_factory(settings)
     gateway: Any = _DryRunGateway()
     try:
         settled = await _settled_cost(session_factory)
-        repository = SqlAlchemyParseRepository(session_factory)
+        repository = SqlAlchemyParseRepository(
+            session_factory,
+            lock_session_factory=lock_factory,
+            max_lock_connections=settings.max_lock_connections,
+        )
         pipeline = ParserPipeline(
             snapshots={snapshot.snapshot_id: snapshot},
             gateway=gateway,
@@ -120,6 +125,7 @@ async def _run(args: argparse.Namespace) -> int:
                 hard_limit=settings.max_project_budget_usd,
             ),
             store=store,
+            billing_cost_multiplier=billing_cost_multiplier,
             max_concurrency=settings.max_concurrency,
             max_retries=settings.max_retries,
         )

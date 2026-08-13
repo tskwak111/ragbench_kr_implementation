@@ -28,9 +28,9 @@ from ragbench.providers.upstage.pricing import PriceBook, PricingRequest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_SOLAR_OUTPUT_TOKENS = 16
-MAX_SOLAR_COST_USD = Decimal("0.000025")
-MAX_PARSE_COST_USD = Decimal("0.010000")
-MAX_EMBED_COST_USD = Decimal("0.000001")
+MAX_SOLAR_COST_USD = Decimal("0.000028")
+MAX_PARSE_COST_USD = Decimal("0.011000")
+MAX_EMBED_COST_USD = Decimal("0.000002")
 
 pytestmark = pytest.mark.live
 
@@ -47,6 +47,7 @@ def live_gateway() -> UpstageGateway:
         price_book=prices,
         budget_guard=BudgetGuard(MemoryBudgetRepository(), hard_limit=Decimal("0.020000")),
         store=MemoryProviderStore(),
+        billing_cost_multiplier=settings.billing_cost_multiplier,
         max_concurrency=1,
         max_retries=0,
     )
