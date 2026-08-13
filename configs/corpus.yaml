@@ -8,4 +8,5 @@ targets:
   minimum_pages: 1500
   maximum_pages: 2000
   maximum_organization_share: 0.35
+  maximum_template_family_share: 0.35
 documents: []

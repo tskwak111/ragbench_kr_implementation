@@ -46,6 +46,9 @@ def _document(
         "year": 2025,
         "document_type": "annual_report",
         "language": "ko",
+        "sector": "corporate",
+        "content_stratum": "mixed",
+        "template_family": "example-annual-report",
         "source_url": "https://example.test/reports/2025.pdf",
         "downloaded_at": str(date(2026, 8, 14)),
         "license": "CC-BY-4.0",
@@ -69,6 +72,7 @@ def _write_manifest(path: Path, documents: list[dict[str, object]], **targets: o
                     "minimum_pages": 1,
                     "maximum_pages": 2_000,
                     "maximum_organization_share": 1.0,
+                    "maximum_template_family_share": 1.0,
                     **targets,
                 },
                 "documents": documents,
@@ -210,3 +214,63 @@ def test_starter_manifest_is_empty_draft_and_cannot_freeze() -> None:
     assert manifest.documents == ()
     with pytest.raises(CorpusManifestValidationError, match="minimum_documents"):
         manifest.validate(freeze=True)
+
+
+def test_frozen_status_runs_freeze_validation_without_an_explicit_flag(tmp_path: Path) -> None:
+    pdf = tmp_path / "document.pdf"
+    sha256 = _write_pdf(pdf)
+    document = _document(pdf, sha256)
+    document["source_url"] = ""
+    document["downloaded_at"] = ""
+    manifest_path = tmp_path / "frozen.yaml"
+    _write_manifest(manifest_path, [document])
+    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    raw["status"] = "frozen"
+    manifest_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(CorpusManifestValidationError, match="source_url"):
+        CorpusManifest.load(manifest_path).validate()
+
+
+def test_freeze_requires_sector_strata_and_template_family_distribution(tmp_path: Path) -> None:
+    pdf = tmp_path / "document.pdf"
+    sha256 = _write_pdf(pdf)
+    manifest_path = tmp_path / "corpus.yaml"
+    _write_manifest(
+        manifest_path,
+        [_document(pdf, sha256)],
+        maximum_organization_share=1.0,
+        maximum_template_family_share=0.5,
+    )
+    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    raw["status"] = "frozen"
+    manifest_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(CorpusManifestValidationError, match="public sector"):
+        CorpusManifest.load(manifest_path).validate()
+
+
+def test_duplicate_yaml_keys_are_rejected(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "duplicate.yaml"
+    manifest_path.write_text(
+        "schema_version: 1\nschema_version: 1\ndocuments: []\n", encoding="utf-8"
+    )
+
+    with pytest.raises(CorpusManifestValidationError, match="duplicate YAML key"):
+        CorpusManifest.load(manifest_path)
+
+
+def test_snapshot_order_is_deterministic_for_full_records_with_same_hash(tmp_path: Path) -> None:
+    pdf = tmp_path / "document.pdf"
+    sha256 = _write_pdf(pdf)
+    first = _document(pdf, sha256, document_id="first")
+    second = {**_document(pdf, sha256, document_id="second"), "title": "Other title"}
+    first_path = tmp_path / "first.yaml"
+    second_path = tmp_path / "second.yaml"
+    _write_manifest(first_path, [first, second])
+    _write_manifest(second_path, [second, first])
+
+    assert (
+        CorpusManifest.load(first_path).corpus_snapshot_id
+        == CorpusManifest.load(second_path).corpus_snapshot_id
+    )

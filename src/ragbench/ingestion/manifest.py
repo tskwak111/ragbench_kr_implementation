@@ -17,6 +17,35 @@ from pypdf import PdfReader
 from ragbench.core.hashing import canonical_json_hash
 
 RedistributionStatus = Literal["redistributable", "nonredistributable", "unknown"]
+Sector = Literal["corporate", "public"]
+ContentStratum = Literal["table_heavy", "text_heavy", "mixed"]
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that refuses ambiguous duplicate mapping keys."""
+
+
+def _construct_mapping_with_unique_keys(
+    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"duplicate YAML key: {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_mapping_with_unique_keys,
+)
 
 
 class CorpusManifestValidationError(ValueError):
@@ -34,6 +63,9 @@ class DocumentRecord(BaseModel):
     year: int = Field(ge=1900, le=2100)
     document_type: str = Field(min_length=1)
     language: str = Field(min_length=2, max_length=16)
+    sector: Sector
+    content_stratum: ContentStratum
+    template_family: str = Field(min_length=1)
     source_url: str = ""
     downloaded_at: str = ""
     license: str = Field(min_length=1)
@@ -75,6 +107,9 @@ class DocumentRecord(BaseModel):
             "year": self.year,
             "document_type": self.document_type,
             "language": self.language,
+            "sector": self.sector,
+            "content_stratum": self.content_stratum,
+            "template_family": self.template_family,
             "source_url": self.source_url,
             "downloaded_at": self.downloaded_at,
             "license": self.license,
@@ -95,6 +130,7 @@ class CorpusTargets(BaseModel):
     minimum_pages: int = Field(default=1500, ge=1)
     maximum_pages: int = Field(default=2000, ge=1)
     maximum_organization_share: float = Field(default=0.35, gt=0, le=1)
+    maximum_template_family_share: float = Field(default=0.35, gt=0, le=1)
 
 
 class CorpusManifestFile(BaseModel):
@@ -128,9 +164,14 @@ class CorpusManifest:
     def load(cls, path: Path) -> CorpusManifest:
         """Load a YAML manifest without touching local PDFs."""
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            contents = path.read_text(encoding="utf-8")
         except OSError as error:
             msg = f"cannot read corpus manifest {path}: {error}"
+            raise CorpusManifestValidationError(msg) from error
+        try:
+            raw = yaml.load(contents, Loader=_UniqueKeyLoader)
+        except yaml.YAMLError as error:
+            msg = f"invalid corpus manifest {path}: {error}"
             raise CorpusManifestValidationError(msg) from error
         if raw is None:
             raw = {}
@@ -151,7 +192,7 @@ class CorpusManifest:
         """Hash stable metadata independently of input ordering and local paths."""
         documents = sorted(
             (item.snapshot_metadata() for item in self.documents),
-            key=lambda item: item["sha256"],
+            key=canonical_json_hash,
         )
         return canonical_json_hash(
             {"schema_version": self._file.schema_version, "documents": documents}
@@ -159,6 +200,7 @@ class CorpusManifest:
 
     def validate(self, *, freeze: bool = False) -> ManifestValidationResult:
         """Validate local PDFs and, in freeze mode, required provenance and corpus targets."""
+        freeze = freeze or self._file.status == "frozen"
         errors: list[str] = []
         ids = Counter(document.document_id for document in self.documents)
         hashes = Counter(document.sha256 for document in self.documents)
@@ -271,4 +313,22 @@ class CorpusManifest:
                     f"{largest:.3f} exceeds maximum_organization_share "
                     f"{targets.maximum_organization_share:.3f}"
                 )
+            template_counts = Counter(document.template_family for document in self.documents)
+            largest_template_share = max(template_counts.values()) / document_count
+            if largest_template_share > targets.maximum_template_family_share:
+                errors.append(
+                    "largest template family share "
+                    f"{largest_template_share:.3f} exceeds maximum_template_family_share "
+                    f"{targets.maximum_template_family_share:.3f}"
+                )
+            sectors = {document.sector for document in self.documents}
+            if "corporate" not in sectors:
+                errors.append("freeze corpus requires at least one corporate sector document")
+            if "public" not in sectors:
+                errors.append("freeze corpus requires at least one public sector document")
+            strata = {document.content_stratum for document in self.documents}
+            if "table_heavy" not in strata:
+                errors.append("freeze corpus requires at least one table_heavy document")
+            if "text_heavy" not in strata:
+                errors.append("freeze corpus requires at least one text_heavy document")
         return errors
