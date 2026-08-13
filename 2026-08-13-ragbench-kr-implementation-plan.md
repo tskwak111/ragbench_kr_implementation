@@ -272,9 +272,9 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `parse_corpus(snapshot_id, mode, resume=True) -> ParseSummary`; persists provider model/version, mode, raw response hash, markdown/html elements, page mappings, latency, cost, and status.
 
-- [ ] **Step 1: Write tests** for one successful page, partial failure, resumable batch, corrupted cached response, duplicate invocation, and page-count reconciliation.
-- [ ] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
-- [ ] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
+- [x] **Step 1: Write tests** for one successful page, partial failure, resumable batch, corrupted cached response, duplicate invocation, and page-count reconciliation.
+- [x] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
+- [x] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
 - [ ] **Step 4: Run Standard on the frozen corpus.** Require at least 95% page success, explicitly list failures, then repair or exclude consistently before Enhanced begins.
 - [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets.
 - [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical.
@@ -596,7 +596,7 @@ Codex must append one row after every completed task; do not mark a task complet
 | 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
 | 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
 | 5 | `f57966e`..`734a4d9` | Ruff, strict mypy, 108 passed/2 skips, 30 ingestion tests | partial | 0 | n/a | Framework approved; real corpus, licensing/manual inspection, freeze and public manifest pending. |
-| 6 | — | — | pending | 0 | pending | — |
+| 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | 0 | pending | Framework approved; real dual parse, 95% gate, paired QA and console reconciliation pending. |
 | 7 | — | — | pending | 0 | n/a | — |
 | 8 | — | — | pending | 0 | pending | — |
 | 9 | — | — | pending | 0 | n/a | — |
