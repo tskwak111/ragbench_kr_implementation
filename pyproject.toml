@@ -8,14 +8,19 @@ version = "0.1.0"
 description = "A reproducible Korean long-document RAG benchmark"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "alembic>=1.14,<2",
+  "asyncpg>=0.30,<1",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "pgvector>=0.3,<1",
+  "sqlalchemy[asyncio]>=2.0,<3",
 ]
 
 [dependency-groups]
 dev = [
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
   "ruff>=0.9,<1",
 ]
 
