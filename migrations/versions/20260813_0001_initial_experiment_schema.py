@@ -284,4 +284,3 @@ def downgrade() -> None:
     op.drop_table("parse_run")
     op.drop_index("ix_document_sha256", table_name="document")
     op.drop_table("document")
-    op.execute("DROP EXTENSION IF EXISTS vector")

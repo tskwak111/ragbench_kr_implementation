@@ -1,6 +1,7 @@
 """Async SQLAlchemy session factory configured from ``Settings``."""
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -13,6 +14,7 @@ def create_session_factory(settings: Settings) -> async_sessionmaker[AsyncSessio
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+@asynccontextmanager
 async def session_scope(factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
     """Yield one transactional session, committing only if the caller succeeds."""
     async with factory() as session, session.begin():

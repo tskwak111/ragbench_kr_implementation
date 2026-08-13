@@ -18,6 +18,8 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    false,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -205,11 +207,19 @@ class ApiUsage(Base):
     correlation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    billable_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    billable_pages: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
-    cache_hit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cache_hit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[CreatedAt]
 
 

@@ -2,19 +2,17 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-TEST_DATABASE_URL = os.getenv(
-    "RAGBENCH_TEST_DATABASE_URL",
-    "postgresql+asyncpg://ragbench:ragbench@localhost:5433/ragbench_test",
-)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -30,20 +28,77 @@ async def _reset_schema(database_url: str) -> None:
         async with engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
-    except (OSError, OperationalError) as error:
-        pytest.skip(f"PostgreSQL integration database is unavailable: {error}")
     finally:
         await engine.dispose()
+
+
+def _test_database_url() -> str | None:
+    return os.getenv("RAGBENCH_TEST_DATABASE_URL")
+
+
+def test_database_url_must_be_explicitly_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catch accidental skipping of an integration test with an intended database URL."""
+    monkeypatch.delenv("RAGBENCH_TEST_DATABASE_URL", raising=False)
+    assert _test_database_url() is None
+
+
+@pytest.mark.asyncio
+async def test_configured_database_connection_failures_are_not_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch swallowing a CI database outage after its URL has been supplied."""
+
+    class FailingConnection:
+        async def __aenter__(self) -> None:
+            raise OSError("connection refused")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class FailingEngine:
+        def begin(self) -> FailingConnection:
+            return FailingConnection()
+
+        async def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr(sys.modules[__name__], "create_async_engine", lambda _: FailingEngine())
+
+    with pytest.raises(OSError, match="connection refused"):
+        await _reset_schema("postgresql+asyncpg://configured.test/ragbench")
+
+
+def test_offline_downgrade_preserves_shared_vector_extension() -> None:
+    """Catch a downgrade that removes an extension it did not necessarily create."""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "downgrade",
+            "20260813_0001:base",
+            "--sql",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "DROP EXTENSION" not in completed.stdout
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_initial_migration_creates_experiment_evidence_schema() -> None:
     """Catch a missing migration or a migration that omits evidence constraints."""
-    await _reset_schema(TEST_DATABASE_URL)
-    await asyncio.to_thread(command.upgrade, _alembic_config(TEST_DATABASE_URL), "head")
+    database_url = _test_database_url()
+    if database_url is None:
+        pytest.skip("RAGBENCH_TEST_DATABASE_URL is not configured")
 
-    engine = create_async_engine(TEST_DATABASE_URL)
+    await _reset_schema(database_url)
+    await asyncio.to_thread(command.upgrade, _alembic_config(database_url), "head")
+
+    engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
             extension = await connection.scalar(

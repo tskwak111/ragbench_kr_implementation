@@ -7,6 +7,22 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: ragbench_test
+          POSTGRES_USER: ragbench
+          POSTGRES_PASSWORD: ragbench
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U ragbench -d ragbench_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      RAGBENCH_TEST_DATABASE_URL: postgresql+asyncpg://ragbench:ragbench@localhost:5433/ragbench_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
