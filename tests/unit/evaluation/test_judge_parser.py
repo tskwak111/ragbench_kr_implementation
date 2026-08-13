@@ -268,6 +268,11 @@ def test_human_calibration_plan_rejects_missing_system_type_strata() -> None:
         plan_human_calibration(candidates, sample_size=100, seed=17)
 
 
+def test_calibration_candidate_requires_real_boolean_risk_flags() -> None:
+    with pytest.raises(TypeError, match="flags"):
+        CalibrationCandidate("r1", "s1", "fact", 1, 0)  # type: ignore[arg-type]
+
+
 def test_human_calibration_plan_rejects_exhausted_imbalanced_stratum() -> None:
     candidates = tuple(
         CalibrationCandidate(
@@ -322,3 +327,8 @@ def test_calibration_rejects_too_few_or_nonhuman_labels() -> None:
 def test_calibration_rejects_non_boolean_human_attestation() -> None:
     with pytest.raises(ValueError, match="attestation"):
         CalibrationPair("r1", "fact", 1.0, 1.0, "human-a", 1)  # type: ignore[arg-type]
+
+
+def test_calibration_pair_rejects_boolean_scores() -> None:
+    with pytest.raises(TypeError, match="scores"):
+        CalibrationPair("r1", "fact", True, False, "human-a", True)  # type: ignore[arg-type]

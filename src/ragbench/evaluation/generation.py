@@ -256,7 +256,12 @@ def _aggregate(cases: Sequence[GenerationCase], *, include_groups: bool) -> Gene
         sum(metric.false_abstention for metric in answerable) / len(answerable)
         if answerable
         else None,
-        {name: _aggregate(grouped[name], include_groups=False) for name in sorted(grouped)},
+        MappingProxyType(
+            {
+                name: _aggregate(grouped[name], include_groups=False)
+                for name in sorted(grouped)
+            }
+        ),
     )
 
 

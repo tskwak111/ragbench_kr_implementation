@@ -350,6 +350,10 @@ class CalibrationCandidate:
     known_failure: bool
 
     def __post_init__(self) -> None:
+        if not isinstance(self.judge_human_disagreement, bool) or not isinstance(
+            self.known_failure, bool
+        ):
+            raise TypeError("calibration risk flags must be booleans")
         if any(
             not value.strip()
             for value in (self.response_id, self.system_id, self.question_type)
@@ -430,6 +434,11 @@ class CalibrationPair:
     human_attested: bool
 
     def __post_init__(self) -> None:
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in (self.judge_score, self.human_score)
+        ):
+            raise TypeError("calibration scores must be real numbers, not booleans")
         if any(
             not item.strip()
             for item in (self.response_id, self.question_type, self.reviewer_id)
