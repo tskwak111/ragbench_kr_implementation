@@ -30,10 +30,10 @@ exist. Further RED cycles covered stale failed IDs after successful resume and o
 incorrectly affecting the semantic hash. Each failed for the intended reason and was followed by a
 focused GREEN run.
 
-Final focused result:
+Final focused result after independent review fixes:
 
 ```text
-14 passed
+17 passed
 ```
 
 ## Verification
@@ -51,7 +51,7 @@ mypy src/ragbench scripts/run_experiment.py
 Success: no issues found in 57 source files
 
 pytest -m 'not live and not gold' -q
-404 passed, 4 skipped
+407 passed, 4 skipped
 
 git diff --check
 exit 0
@@ -67,3 +67,11 @@ access, or real 12,000-response campaign occurred. The CLI therefore remains fai
 paid gates in this local environment rather than constructing direct HTTP. Real execution must wire
 the existing gateway-backed RAG executor, display a fresh plan, receive explicit approval, and then
 record actual provider billing before any quality or winner claim is permitted.
+
+## Independent review
+
+The reviewer found three Important issues and no Critical issues: mismatched resume configs could
+misstate cache reuse, a truncated directly-written result could be counted complete, and relative
+destinations depended on process CWD. Fixes now bind resume to the exact semantic hash, validate
+every existing result and publish it atomically, and canonicalize output paths relative to the YAML
+file. Focused regressions cover each case.

@@ -34,5 +34,5 @@ question_ids:
   - REPLACE-QUESTION-001
   - REPLACE-QUESTION-002
   - REPLACE-QUESTION-003
-output_dir: data/experiments
+output_dir: ../../data/experiments
 code_commit: d1cc890

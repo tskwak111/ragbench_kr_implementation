@@ -49,7 +49,12 @@ def _run(args: argparse.Namespace) -> int:
     config = ExperimentConfig.from_yaml(args.config)
     prices = PriceBook.from_yaml(args.prices)
     repository = FileExperimentRepository(Path(config.output_dir))
-    cached_ids = set(repository.result_ids(args.resume)) if args.resume is not None else None
+    cached_ids = None
+    if args.resume is not None:
+        resumed = repository.load(args.resume)
+        if resumed.config_hash != config.semantic_hash:
+            raise ValueError("resume run belongs to a different semantic config")
+        cached_ids = set(repository.result_ids(args.resume))
     plan = build_dry_run_plan(config, price_book=prices, cached_question_ids=cached_ids)
     if not args.execute:
         print(json.dumps(_plan_payload(plan), ensure_ascii=False, sort_keys=True))

@@ -148,6 +148,11 @@ class ExperimentConfig(_FrozenModel):
         loaded = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
         if not isinstance(loaded, dict):
             raise ValueError("experiment config YAML root must be a mapping")
+        output_dir = loaded.get("output_dir")
+        if isinstance(output_dir, str):
+            output_path = Path(output_dir)
+            if not output_path.is_absolute():
+                loaded["output_dir"] = str((path.resolve().parent / output_path).resolve())
         return cls.model_validate(loaded)
 
 
@@ -408,17 +413,27 @@ class FileExperimentRepository:
 
     def result_ids(self, run_id: str) -> frozenset[str]:
         config = self.load_config(run_id)
-        return frozenset(
-            question_id
-            for question_id in config.question_ids
-            if (self._find(run_id) / "results" / f"{_safe_id(question_id)}.json").is_file()
-        )
+        completed: set[str] = set()
+        for question_id in config.question_ids:
+            path = self._find(run_id) / "results" / f"{_safe_id(question_id)}.json"
+            if not path.exists():
+                continue
+            try:
+                result = ExperimentQuestionResult.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValidationError) as error:
+                raise ValueError(f"invalid immutable result for question {question_id}") from error
+            if result.question_id != question_id:
+                raise ValueError(f"invalid immutable result for question {question_id}")
+            completed.add(question_id)
+        return frozenset(completed)
 
     def save_result(self, run_id: str, result: ExperimentQuestionResult) -> None:
         if result.question_id not in self.load_config(run_id).question_ids:
             raise ValueError("result question is outside the immutable cohort")
         path = self._find(run_id) / "results" / f"{_safe_id(result.question_id)}.json"
-        _write_exclusive_json(path, result.model_dump(mode="json"))
+        _write_atomic_exclusive_json(path, result.model_dump(mode="json"))
 
     def save_error(self, run_id: str, question_id: str, error: BaseException) -> None:
         root = self._find(run_id) / "errors" / _safe_id(question_id)
@@ -634,6 +649,24 @@ def _write_replace_json(path: Path, payload: Mapping[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_atomic_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, allow_nan=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise FileExistsError(f"immutable artifact already exists: {path}") from None
     finally:
         temporary.unlink(missing_ok=True)
 
