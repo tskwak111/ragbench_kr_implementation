@@ -40,6 +40,10 @@ class MaterialClaim:
     supporting_evidence_ids: frozenset[str]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.supporting_evidence_ids, (set, frozenset)) or any(
+            not isinstance(value, str) for value in self.supporting_evidence_ids
+        ):
+            raise TypeError("supporting evidence IDs must be a set of strings")
         object.__setattr__(
             self, "supporting_evidence_ids", frozenset(self.supporting_evidence_ids)
         )
@@ -64,6 +68,14 @@ class GenerationCase:
     claim_citations: Mapping[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.aliases, (list, tuple)) or any(
+            not isinstance(value, str) for value in self.aliases
+        ):
+            raise TypeError("aliases must be a list or tuple of strings")
+        if not isinstance(self.claims, (list, tuple)) or any(
+            not isinstance(value, MaterialClaim) for value in self.claims
+        ):
+            raise TypeError("claims must be a list or tuple of MaterialClaim values")
         object.__setattr__(self, "aliases", tuple(self.aliases))
         object.__setattr__(self, "claims", tuple(self.claims))
         if not self.question_id.strip() or not self.question_type.strip():

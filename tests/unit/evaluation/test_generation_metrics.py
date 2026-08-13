@@ -204,3 +204,20 @@ def test_generation_case_defensively_freezes_all_caller_owned_collections() -> N
 def test_supported_claim_requires_at_least_one_supporting_evidence_unit() -> None:
     with pytest.raises(ValueError, match="supported claim"):
         MaterialClaim("c1", True, frozenset())
+
+
+def test_generation_collections_reject_strings_disguised_as_containers() -> None:
+    with pytest.raises(TypeError, match="evidence IDs"):
+        MaterialClaim("c1", True, "e1")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="aliases"):
+        GenerationCase(
+            "q1",
+            "fact",
+            "답",
+            "별칭",  # type: ignore[arg-type]
+            True,
+            "답",
+            False,
+            (),
+            {},
+        )
