@@ -40,6 +40,9 @@ class MaterialClaim:
     supporting_evidence_ids: frozenset[str]
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "supporting_evidence_ids", frozenset(self.supporting_evidence_ids)
+        )
         if not self.claim_id.strip():
             raise ValueError("claim ID cannot be blank")
         if any(not item.strip() for item in self.supporting_evidence_ids):
@@ -61,6 +64,8 @@ class GenerationCase:
     claim_citations: Mapping[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "aliases", tuple(self.aliases))
+        object.__setattr__(self, "claims", tuple(self.claims))
         if not self.question_id.strip() or not self.question_type.strip():
             raise ValueError("generation case identity cannot be blank")
         if self.expected_answer is not None and not self.expected_answer.strip():

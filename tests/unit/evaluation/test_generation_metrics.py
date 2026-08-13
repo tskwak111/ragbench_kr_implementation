@@ -177,6 +177,30 @@ def test_generation_case_freezes_citation_mapping_for_reproducibility() -> None:
         case.claim_citations["c1"] = ()  # type: ignore[index]
 
 
+def test_generation_case_defensively_freezes_all_caller_owned_collections() -> None:
+    evidence = {"e1"}
+    aliases = ["별칭"]
+    claims = [MaterialClaim("c1", True, evidence)]  # type: ignore[arg-type]
+    case = GenerationCase(
+        question_id="q-all-frozen",
+        question_type="fact",
+        expected_answer="답",
+        aliases=aliases,  # type: ignore[arg-type]
+        answerable=True,
+        predicted_answer="별칭",
+        abstained=False,
+        claims=claims,  # type: ignore[arg-type]
+        claim_citations={"c1": ("e1",)},
+    )
+    evidence.clear()
+    aliases.clear()
+    claims.clear()
+    assert case.aliases == ("별칭",)
+    assert len(case.claims) == 1
+    assert case.claims[0].supporting_evidence_ids == frozenset({"e1"})
+    assert evaluate_generation(case).deterministic_correctness == 1.0
+
+
 def test_supported_claim_requires_at_least_one_supporting_evidence_unit() -> None:
     with pytest.raises(ValueError, match="supported claim"):
         MaterialClaim("c1", True, frozenset())
