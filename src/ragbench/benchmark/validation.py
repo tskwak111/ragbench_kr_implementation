@@ -41,6 +41,7 @@ class CompletionLevel(StrEnum):
 class ValidationConfig:
     quotas: Mapping[QuestionType, int] | None = None
     per_document_cap: int = 300
+    per_page_cap: int = 30
     duplicate_similarity_threshold: float = 0.92
     evidence_similarity_threshold: float = 0.96
     rejection_sample_limit: int = 5
@@ -52,6 +53,8 @@ class ValidationConfig:
             raise ValueError("validation quotas must be positive")
         if self.per_document_cap <= 0:
             raise ValueError("per_document_cap must be positive")
+        if self.per_page_cap <= 0:
+            raise ValueError("per_page_cap must be positive")
         if not 0 <= self.duplicate_similarity_threshold <= 1:
             raise ValueError("duplicate threshold must be between zero and one")
         if not 0 <= self.evidence_similarity_threshold <= 1:
@@ -140,6 +143,7 @@ def validate_candidates(
     )
     accepted_type_counts: Counter[QuestionType] = Counter()
     accepted_document_counts: Counter[str] = Counter()
+    accepted_page_counts: Counter[tuple[str, int]] = Counter()
     validated: list[QuestionCandidate] = []
     seen_candidate_ids: set[str] = set()
 
@@ -180,6 +184,12 @@ def validate_candidates(
                 for document_id in evidence_documents
             ):
                 rules.append("per_document_cap_exceeded")
+            elif any(
+                accepted_page_counts[(span.document_id, span.page)]
+                >= active_config.per_page_cap
+                for span in candidate.evidence_spans
+            ):
+                rules.append("per_page_cap_exceeded")
 
         unique_rules = tuple(dict.fromkeys(rules))
         decision = (
@@ -193,6 +203,10 @@ def validate_candidates(
             accepted_type_counts[candidate.question_type] += 1
             for document_id in evidence_documents:
                 accepted_document_counts[document_id] += 1
+            for document_page in {
+                (span.document_id, span.page) for span in candidate.evidence_spans
+            }:
+                accepted_page_counts[document_page] += 1
 
     accepted = tuple(
         item for item in validated if item.validation.decision is ValidationDecision.ACCEPTED
@@ -209,11 +223,17 @@ def validate_candidates(
         sorted(Counter(item.question_type.value for item in accepted).items())
     )
     config_snapshot = _validation_config_snapshot(active_config)
+    effective_config_snapshot = {
+        **config_snapshot,
+        "contamination_terms": sorted(
+            {*active_config.contamination_terms, *contamination_terms}
+        ),
+    }
     validation_run_hash = canonical_json_hash(
         {
             "schema": "benchmark-validation-v2",
-            "config": config_snapshot,
-            "candidate_ids": [item.candidate_id for item in candidates],
+            "config": effective_config_snapshot,
+            "candidates": [item.model_dump(mode="json") for item in candidates],
             "plan_hashes": sorted({item.generator.plan_hash for item in candidates}),
             "corpus": [window.model_dump(mode="json") for window in windows],
         }
@@ -232,7 +252,7 @@ def validate_candidates(
         duplicate_groups=duplicate_groups,
         quota_deficits=quota_deficits(type_distribution),
         validation_run_hash=validation_run_hash,
-        validation_config=config_snapshot,
+        validation_config=effective_config_snapshot,
     )
 
 
@@ -318,9 +338,14 @@ def _answer_rules(candidate: QuestionCandidate) -> list[str]:
     ):
         rules.append("answer_not_supported")
     elif candidate.question_type not in {QuestionType.FACT, QuestionType.NUMERIC_TABLE}:
-        answer_tokens = _content_tokens(candidate.gold_answer)
-        evidence_tokens = _content_tokens(evidence)
-        if answer_tokens and not answer_tokens.issubset(evidence_tokens):
+        answer_tokens = _content_token_sequence(candidate.gold_answer)
+        evidence_tokens = _content_token_sequence(evidence)
+        answer_relations = set(zip(answer_tokens, answer_tokens[1:], strict=False))
+        evidence_relations = set(zip(evidence_tokens, evidence_tokens[1:], strict=False))
+        if answer_tokens and (
+            not set(answer_tokens).issubset(evidence_tokens)
+            or (answer_relations and not answer_relations.issubset(evidence_relations))
+        ):
             rules.append("answer_not_supported")
     return rules
 
@@ -405,6 +430,7 @@ def _validation_config_snapshot(config: ValidationConfig) -> dict[str, object]:
     return {
         "quotas": {kind.value: count for kind, count in config.quotas.items()},
         "per_document_cap": config.per_document_cap,
+        "per_page_cap": config.per_page_cap,
         "duplicate_similarity_threshold": config.duplicate_similarity_threshold,
         "evidence_similarity_threshold": config.evidence_similarity_threshold,
         "rejection_sample_limit": config.rejection_sample_limit,
@@ -413,8 +439,12 @@ def _validation_config_snapshot(config: ValidationConfig) -> dict[str, object]:
 
 
 def _content_tokens(value: str) -> set[str]:
-    return {
+    return set(_content_token_sequence(value))
+
+
+def _content_token_sequence(value: str) -> tuple[str, ...]:
+    return tuple(
         token
         for token in re.findall(r"[0-9a-z가-힣]+", unicodedata.normalize("NFKC", value).lower())
         if len(token) >= 2
-    }
+    )

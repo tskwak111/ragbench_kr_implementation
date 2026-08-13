@@ -101,6 +101,10 @@ class UnanswerableTransform(_FrozenModel):
     def _facts_must_differ(self) -> Self:
         if _search_text(self.original_fact) == _search_text(self.transformed_fact):
             raise ValueError("unanswerable transform must change the source fact")
+        if not _fact_anchors(self.original_fact).intersection(
+            _fact_anchors(self.transformed_fact)
+        ):
+            raise ValueError("unanswerable transform must preserve a source-fact anchor")
         return self
 
 
@@ -369,6 +373,7 @@ class GenerationPlanner:
         accepted_counts: Mapping[QuestionType, int],
         attempt: int,
         target_quotas: Mapping[QuestionType, int] | None = None,
+        prior_plans: Sequence[GenerationPlan] | None = None,
     ) -> GenerationPlan:
         """Plan only missing strata under a new immutable attempt identity."""
         if attempt <= 0:
@@ -382,27 +387,93 @@ class GenerationPlanner:
         if not deficits:
             raise ValueError("replacement plan requires at least one quota deficit")
         windows = tuple(dict.fromkeys(job.window for job in parent.jobs))
-        replacement_config = self.config.model_copy(update={"quotas": deficits})
-        planned = GenerationPlanner(replacement_config).plan(
-            windows,
-            corpus_snapshot_id=parent.corpus_snapshot_id,
-            model_id=parent.model_id,
+        prior = tuple(prior_plans or (parent,))
+        doc_counts: dict[str, int] = {}
+        page_counts: dict[tuple[str, int], int] = {}
+        for prior_plan in prior:
+            for job in prior_plan.jobs:
+                doc = job.window.document_id
+                doc_counts[doc] = doc_counts.get(doc, 0) + 1
+                for page in range(job.window.page_start, job.window.page_end + 1):
+                    key = (doc, page)
+                    page_counts[key] = page_counts.get(key, 0) + 1
+        jobs: list[GenerationJob] = []
+        cursor = 0
+        expanded_types = tuple(kind for kind, count in deficits.items() for _ in range(count))
+        for local_ordinal, kind in enumerate(expanded_types):
+            chosen: SourceWindow | None = None
+            for offset in range(len(windows)):
+                index = (cursor + offset) % len(windows)
+                window = windows[index]
+                pages = range(window.page_start, window.page_end + 1)
+                if doc_counts.get(window.document_id, 0) >= self.config.per_document_cap:
+                    continue
+                if any(
+                    page_counts.get((window.document_id, page), 0)
+                    >= self.config.per_page_cap
+                    for page in pages
+                ):
+                    continue
+                chosen = window
+                cursor = (index + 1) % len(windows)
+                break
+            if chosen is None:
+                raise ValueError("replacement source capacity exhausted under campaign caps")
+            doc_counts[chosen.document_id] = doc_counts.get(chosen.document_id, 0) + 1
+            for page in range(chosen.page_start, chosen.page_end + 1):
+                key = (chosen.document_id, page)
+                page_counts[key] = page_counts.get(key, 0) + 1
+            jobs.append(
+                GenerationJob(
+                    ordinal=attempt * 1_000_000 + local_ordinal,
+                    question_type=kind,
+                    window=chosen,
+                )
+            )
+        batches = tuple(
+            GenerationBatch(
+                batch_id=f"replacement-{attempt:04d}-{start // self.config.batch_size:04d}",
+                jobs=tuple(jobs[start : start + self.config.batch_size]),
+            )
+            for start in range(0, len(jobs), self.config.batch_size)
         )
         identity = {
             "schema": "benchmark-replacement-plan-v1",
             "parent_plan_hash": parent.plan_hash,
             "attempt": attempt,
             "deficits": {kind.value: count for kind, count in deficits.items()},
-            "planned_hash": planned.plan_hash,
+            "prior_plan_hashes": [item.plan_hash for item in prior],
+            "jobs": [job.model_dump(mode="json") for job in jobs],
         }
         plan_hash = canonical_json_hash(identity)
-        batches = tuple(
-            batch.model_copy(
-                update={"batch_id": f"replacement-{attempt:04d}-{index:04d}"}
-            )
-            for index, batch in enumerate(planned.batches)
+        return GenerationPlan(
+            plan_hash=plan_hash,
+            corpus_snapshot_id=parent.corpus_snapshot_id,
+            model_id=parent.model_id,
+            prompt_version=parent.prompt_version,
+            jobs=tuple(jobs),
+            batches=batches,
         )
-        return planned.model_copy(update={"plan_hash": plan_hash, "batches": batches})
+
+
+def generation_campaign_hash(
+    plan: GenerationPlan,
+    *,
+    max_replacement_rounds: int,
+    allow_reduced_scope: bool,
+) -> str:
+    """Commit operator confirmation to every bounded paid campaign dimension."""
+    if max_replacement_rounds < 0:
+        raise ValueError("max replacement rounds cannot be negative")
+    return canonical_json_hash(
+        {
+            "schema": "benchmark-generation-campaign-v1",
+            "initial_plan_hash": plan.plan_hash,
+            "max_replacement_rounds": max_replacement_rounds,
+            "allow_reduced_scope": allow_reduced_scope,
+            "replacement_policy": "quota-deficits-with-cumulative-source-caps-v1",
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +492,7 @@ def generation_execution_blockers(
     projected_cost_usd: Decimal,
     remaining_budget_usd: Decimal,
     now: datetime,
+    required_confirmation_hash: str | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     if not authorization.execute:
@@ -429,8 +501,9 @@ def generation_execution_blockers(
         blockers.append("provider generation requires RUN_LIVE_UPSTAGE_TESTS=1")
     if not authorization.confirm_paid:
         blockers.append("paid generation requires explicit price confirmation")
-    if authorization.confirmed_plan_hash != plan.plan_hash:
-        blockers.append("confirmed generation plan hash does not match")
+    required_hash = required_confirmation_hash or plan.plan_hash
+    if authorization.confirmed_plan_hash != required_hash:
+        blockers.append("confirmed generation campaign hash does not match")
     try:
         price_book.verify_paid_batch(now=now)
     except PriceBookError as error:
@@ -476,6 +549,21 @@ class MemoryBatchRepository:
         if batch.payload_hash != _candidate_payload_hash(batch.candidates):
             raise RuntimeError("generation batch payload hash does not match")
         self._batches[key] = batch
+
+    async def save_candidates(
+        self,
+        plan_hash: str,
+        batch_id: str,
+        candidates: tuple[QuestionCandidate, ...],
+    ) -> None:
+        await self.put(
+            StoredBatch(
+                plan_hash=plan_hash,
+                batch_id=batch_id,
+                candidates=candidates,
+                payload_hash=_candidate_payload_hash(candidates),
+            )
+        )
 
 
 class FileBatchRepository:
@@ -583,6 +671,7 @@ class BenchmarkGenerator:
             raise ValueError("batch is not part of the immutable generation plan")
         stored = await self._repository.get(plan.plan_hash, batch.batch_id)
         if stored is not None:
+            _validate_resumed_candidates(plan, batch, stored.candidates)
             return stored.candidates
         prompt = _generation_prompt(plan, batch)
         response = await self._gateway.generate(
@@ -754,6 +843,14 @@ def _candidate_payload_hash(candidates: Sequence[QuestionCandidate]) -> str:
 
 
 def _validate_candidate_window(candidate: QuestionCandidate, window: SourceWindow) -> None:
+    if candidate.unanswerable_transform is not None:
+        transform = candidate.unanswerable_transform
+        if (
+            transform.target_document_id != window.document_id
+            or _search_text(transform.original_fact) not in _search_text(window.content)
+            or _search_text(transform.transformed_fact) in _search_text(window.content)
+        ):
+            raise ValueError("candidate transform is outside the assigned source window")
     for span in candidate.evidence_spans:
         units = tuple(
             unit
@@ -764,6 +861,34 @@ def _validate_candidate_window(candidate: QuestionCandidate, window: SourceWindo
             _search_text(span.text) in _search_text(unit.content) for unit in units
         ):
             raise ValueError("candidate evidence is outside the assigned source window")
+
+
+def _validate_resumed_candidates(
+    plan: GenerationPlan,
+    batch: GenerationBatch,
+    candidates: tuple[QuestionCandidate, ...],
+) -> None:
+    if len(candidates) != len(batch.jobs):
+        raise RuntimeError("checkpoint does not match current plan provenance")
+    for candidate, job in zip(candidates, batch.jobs, strict=True):
+        expected_id = canonical_json_hash(
+            {"plan_hash": plan.plan_hash, "job_ordinal": job.ordinal}
+        )
+        expected_window_hash = canonical_json_hash(job.window.model_dump(mode="json"))
+        if (
+            candidate.candidate_id != expected_id
+            or candidate.question_type is not job.question_type
+            or candidate.generator.plan_hash != plan.plan_hash
+            or candidate.generator.batch_id != batch.batch_id
+            or candidate.generator.source_window_hash != expected_window_hash
+            or candidate.generator.model_id != plan.model_id
+            or candidate.generator.prompt_version != plan.prompt_version
+        ):
+            raise RuntimeError("checkpoint does not match current plan provenance")
+        try:
+            _validate_candidate_window(candidate, job.window)
+        except ValueError as error:
+            raise RuntimeError("checkpoint does not match current plan provenance") from error
 
 
 def _stored_batch_bytes(batch: StoredBatch) -> bytes:
@@ -787,3 +912,10 @@ def _stored_batch_bytes(batch: StoredBatch) -> bytes:
 
 def _search_text(value: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", unicodedata.normalize("NFKC", value).lower())
+
+
+def _fact_anchors(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z가-힣]{2,}", unicodedata.normalize("NFKC", value).lower())
+    }

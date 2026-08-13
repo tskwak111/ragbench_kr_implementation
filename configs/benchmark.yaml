@@ -17,6 +17,7 @@ generation:
   emergency_floor: 800
 validation:
   per_document_cap: 300
+  per_page_cap: 30
   duplicate_similarity_threshold: 0.92
   evidence_similarity_threshold: 0.96
   rejection_sample_limit: 5

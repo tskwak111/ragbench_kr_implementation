@@ -23,8 +23,9 @@
   accepted type/difficulty/document distributions, duplicate groups, and completion level. The
   normal reduced-scope completion floor is 1,000; 800–999 is explicitly `emergency_only`, not DOD.
 - Added `configs/benchmark.yaml` and a dry-run-by-default `scripts/generate_benchmark.py`. Dry-run
-  only loads local windows/config and emits the plan hash. Execution requires `--execute`,
-  `--confirm-paid`, exact `--confirm-plan`, live environment enablement, an API key, a pricing
+  only loads local windows/config and emits plan and campaign hashes. Execution requires
+  `--execute`, `--confirm-paid`, exact campaign hash through `--confirm-plan`, live environment
+  enablement, an API key, a pricing
   snapshot no older than 24 hours, and projected cost below remaining settled-plus-reserved budget.
   Actual batches are validated and persisted; an accepted count below 1,000 returns nonzero.
 
@@ -103,5 +104,17 @@ Each finding received an adversarial RED test and implementation correction:
 - candidate IDs are derived server-side from plan hash and job ordinal, while the validator also
   rejects duplicate IDs globally.
 
-Fresh post-review verification raised the focused suite to 24 passing tests and the complete
-offline suite to `287 passed, 4 skipped`; Ruff, strict mypy, and `git diff --check` remained clean.
+The re-review then found six remaining Important boundaries in the committed fix: replacement
+rounds were outside the initially confirmed cost/hash and reset source caps; compositional support
+could still invert a relation; controlled transforms could use an unrelated original fact; runtime
+contamination and candidate payloads were absent from validation identity; and resumed checkpoints
+were not revalidated against the current plan. The final corrections bind maximum rounds,
+reduced-scope choice, and worst-case campaign cost to one operator-confirmed campaign hash; carry
+document/page allocations across all replacement plans; require ordered answer-token relations;
+preserve a shared fact anchor and bind the transform to its assigned window; hash full candidate
+payloads plus effective runtime rules; enforce per-page caps in final validation; and revalidate
+every resumed candidate's server ID, type, plan/batch/window/model metadata, and evidence.
+
+Fresh final post-review verification raised the focused suite to 26 passing tests. The complete
+offline suite passed `289 passed, 4 skipped`; Ruff, strict mypy, `git diff --check`, and the
+credential-pattern scan remained clean after the final correction round.

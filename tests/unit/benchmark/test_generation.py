@@ -30,6 +30,7 @@ from ragbench.benchmark.generation import (
     ValidationDecision,
     ValidationStatus,
     controlled_unanswerable,
+    generation_campaign_hash,
     generation_execution_blockers,
     parse_candidate_json,
 )
@@ -311,13 +312,40 @@ async def test_generation_rejects_evidence_outside_the_assigned_source_window() 
         await generator.generate_batch(plan, plan.batches[0])
 
 
+@pytest.mark.asyncio
+async def test_generation_revalidates_server_identity_when_resuming_checkpoint() -> None:
+    """Catch a hash-valid legacy checkpoint bypassing current server-owned provenance rules."""
+    config = GenerationConfig(
+        quotas={QuestionType.FACT: 1}, per_document_cap=1, per_page_cap=1, batch_size=1
+    )
+    plan = GenerationPlanner(config).plan(
+        (_windows()[0],), corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
+    )
+    repository = MemoryBatchRepository()
+    await repository.save_candidates(
+        plan.plan_hash,
+        plan.batches[0].batch_id,
+        (
+            _candidate(plan_hash=plan.plan_hash).model_copy(
+                update={"question_type": QuestionType.FACT}
+            ),
+        ),
+    )
+    generator = BenchmarkGenerator(
+        _FakeGateway(_candidate(plan_hash=plan.plan_hash)), repository, config=config
+    )
+
+    with pytest.raises(RuntimeError, match="current plan provenance"):
+        await generator.generate_batch(plan, plan.batches[0])
+
+
 def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> None:
     """Catch negative examples whose supposedly absent fact actually exists in the snapshot."""
     window = _windows()[0]
     candidate = controlled_unanswerable(
-        question="첫 문서의 직원 수는 99명인가?",
+        question="첫 문서의 매출은 999원인가?",
         original_fact="매출은 101원",
-        asserted_absent_fact="직원 수는 99명",
+        asserted_absent_fact="매출은 999원",
         document_windows=(window,),
         metadata=GeneratorMetadata(
             model_id="offline-transform",
@@ -338,6 +366,15 @@ def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> Non
             question="매출은 101원인가?",
             original_fact="매출은 101원",
             asserted_absent_fact="매출은 101원",
+            document_windows=(window,),
+            metadata=candidate.generator,
+        )
+
+    with pytest.raises(ValueError, match="anchor"):
+        controlled_unanswerable(
+            question="CEO는 홍길동인가?",
+            original_fact="매출은 101원",
+            asserted_absent_fact="CEO는 홍길동",
             document_windows=(window,),
             metadata=candidate.generator,
         )
@@ -364,6 +401,41 @@ def test_replacement_plan_refills_only_quota_deficits_with_new_global_ids() -> N
     assert tuple(job.question_type for job in replacement.jobs) == (QuestionType.FACT,)
     assert replacement.plan_hash != initial.plan_hash
     assert replacement.batches[0].batch_id.startswith("replacement-0001-")
+
+
+def test_replacement_plans_preserve_campaign_caps_and_campaign_confirmation_identity() -> None:
+    """Catch replacement calls escaping approved rounds or resetting page/document caps."""
+    config = GenerationConfig(
+        quotas={QuestionType.FACT: 1},
+        per_document_cap=2,
+        per_page_cap=2,
+        batch_size=1,
+    )
+    planner = GenerationPlanner(config)
+    initial = planner.plan(
+        (_windows()[0],), corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
+    )
+    replacement = planner.plan_replacements(
+        initial,
+        accepted_counts={},
+        attempt=1,
+        prior_plans=(initial,),
+    )
+    with pytest.raises(ValueError, match="capacity"):
+        planner.plan_replacements(
+            initial,
+            accepted_counts={},
+            attempt=2,
+            prior_plans=(initial, replacement),
+        )
+
+    first = generation_campaign_hash(
+        initial, max_replacement_rounds=1, allow_reduced_scope=False
+    )
+    second = generation_campaign_hash(
+        initial, max_replacement_rounds=2, allow_reduced_scope=False
+    )
+    assert first != second
 
 
 @pytest.mark.asyncio
@@ -416,8 +488,10 @@ def test_generate_benchmark_cli_is_dry_run_by_default(tmp_path: Path) -> None:
     assert payload == {
         "batch_count": 125,
         "candidate_target": 1500,
+        "campaign_hash": payload["campaign_hash"],
         "live_executed": False,
         "mode": "dry-run",
         "plan_hash": payload["plan_hash"],
     }
     assert len(payload["plan_hash"]) == 64
+    assert len(payload["campaign_hash"]) == 64

@@ -27,6 +27,7 @@ from ragbench.benchmark.generation import (
     QuestionCandidate,
     QuestionType,
     SourceWindow,
+    generation_campaign_hash,
     generation_execution_blockers,
     projected_generation_cost,
 )
@@ -183,12 +184,18 @@ async def _run(args: argparse.Namespace) -> int:
         corpus_snapshot_id=args.corpus_snapshot_id,
         model_id=model_id,
     )
+    campaign_hash = generation_campaign_hash(
+        plan,
+        max_replacement_rounds=args.max_replacement_rounds,
+        allow_reduced_scope=args.allow_reduced_scope,
+    )
     if not args.execute:
         print(
             json.dumps(
                 {
                     "batch_count": len(plan.batches),
                     "candidate_target": len(plan.jobs),
+                    "campaign_hash": campaign_hash,
                     "live_executed": False,
                     "mode": "dry-run",
                     "plan_hash": plan.plan_hash,
@@ -201,12 +208,13 @@ async def _run(args: argparse.Namespace) -> int:
     if not settings.upstage_api_key:
         raise BenchmarkGenerationError("UPSTAGE_API_KEY is required for execution")
     price_book = PriceBook.from_yaml(args.prices)
-    projected_cost = projected_generation_cost(
+    initial_plan_cost = projected_generation_cost(
         plan,
         config=generation_config,
         price_book=price_book,
         billing_multiplier=settings.billing_cost_multiplier,
     )
+    projected_cost = initial_plan_cost * (args.max_replacement_rounds + 1)
     session_factory = create_session_factory(settings)
     lock_factory = create_lock_session_factory(settings)
     gateway: UpstageGateway | None = None
@@ -224,6 +232,7 @@ async def _run(args: argparse.Namespace) -> int:
             projected_cost_usd=projected_cost,
             remaining_budget_usd=remaining,
             now=datetime.now(UTC),
+            required_confirmation_hash=campaign_hash,
         )
         if blockers:
             print(json.dumps({"executed": False, "blockers": blockers}, ensure_ascii=False))
@@ -252,6 +261,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
         generated: list[QuestionCandidate] = []
         current_plan = plan
+        campaign_plans = [plan]
         report = None
         for attempt in range(args.max_replacement_rounds + 1):
             for batch in current_plan.batches:
@@ -275,7 +285,9 @@ async def _run(args: argparse.Namespace) -> int:
                 accepted_counts=accepted_counts,
                 attempt=attempt + 1,
                 target_quotas=(NORMAL_SCOPE_QUOTAS if args.allow_reduced_scope else None),
+                prior_plans=tuple(campaign_plans),
             )
+            campaign_plans.append(current_plan)
         assert report is not None
         summary = report_payload(report)
         _write_results(args.output_dir, plan.plan_hash, report.items, summary)
@@ -284,6 +296,7 @@ async def _run(args: argparse.Namespace) -> int:
                 {
                     "accepted_count": report.accepted_count,
                     "completion_level": summary["completion_level"],
+                    "campaign_hash": campaign_hash,
                     "executed": True,
                     "plan_hash": plan.plan_hash,
                     "projected_cost_usd": str(projected_cost),
