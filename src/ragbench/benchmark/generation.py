@@ -91,6 +91,19 @@ class GeneratorMetadata(_FrozenModel):
     cache_hit: bool | None = None
 
 
+class UnanswerableTransform(_FrozenModel):
+    target_document_id: str = Field(min_length=1)
+    original_fact: str = Field(min_length=1)
+    transformed_fact: str = Field(min_length=1)
+    operation: str = Field(default="controlled_substitution", min_length=1)
+
+    @model_validator(mode="after")
+    def _facts_must_differ(self) -> Self:
+        if _search_text(self.original_fact) == _search_text(self.transformed_fact):
+            raise ValueError("unanswerable transform must change the source fact")
+        return self
+
+
 class ValidationStatus(_FrozenModel):
     decision: ValidationDecision
     rule_codes: tuple[str, ...] = ()
@@ -115,6 +128,7 @@ class QuestionCandidate(_FrozenModel):
     difficulty: Difficulty
     answerable: bool
     asserted_absent_facts: tuple[str, ...] = ()
+    unanswerable_transform: UnanswerableTransform | None = None
     generator: GeneratorMetadata
     validation: ValidationStatus
 
@@ -149,6 +163,8 @@ class QuestionCandidate(_FrozenModel):
                 raise ValueError("answerable candidate requires gold answer and evidence")
             if self.asserted_absent_facts:
                 raise ValueError("answerable candidate cannot assert absent facts")
+            if self.unanswerable_transform is not None:
+                raise ValueError("answerable candidate cannot contain a negative transform")
         else:
             if self.question_type is not QuestionType.UNANSWERABLE:
                 raise ValueError("unanswerable candidate requires unanswerable type")
@@ -156,11 +172,21 @@ class QuestionCandidate(_FrozenModel):
                 raise ValueError("unanswerable candidate cannot contain answer or evidence")
             if not self.asserted_absent_facts:
                 raise ValueError("unanswerable candidate requires absence assertions")
+            if self.unanswerable_transform is None:
+                raise ValueError("unanswerable candidate requires controlled transformation")
+            if self.asserted_absent_facts != (self.unanswerable_transform.transformed_fact,):
+                raise ValueError("absence assertion must equal the transformed fact")
         return self
 
 
 class CandidateBatchEnvelope(_FrozenModel):
     candidates: tuple[QuestionCandidate, ...]
+
+
+class SourceUnit(_FrozenModel):
+    page: int = Field(gt=0)
+    chunk_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
 
 
 class SourceWindow(_FrozenModel):
@@ -171,6 +197,7 @@ class SourceWindow(_FrozenModel):
     page_end: int = Field(gt=0)
     chunk_ids: tuple[str, ...] = Field(min_length=1)
     content: str = Field(min_length=1)
+    source_units: tuple[SourceUnit, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _valid_window(self) -> Self:
@@ -178,6 +205,14 @@ class SourceWindow(_FrozenModel):
             raise ValueError("source window page range is invalid")
         if any(not value.strip() for value in (*self.chunk_ids, self.content)):
             raise ValueError("source window fields cannot be blank")
+        unit_chunks = tuple(dict.fromkeys(unit.chunk_id for unit in self.source_units))
+        if unit_chunks != self.chunk_ids:
+            raise ValueError("source units must exactly cover window chunk IDs")
+        if any(not self.page_start <= unit.page <= self.page_end for unit in self.source_units):
+            raise ValueError("source unit page is outside the window range")
+        unit_content = "\n".join(unit.content for unit in self.source_units)
+        if _search_text(self.content) != _search_text(unit_content):
+            raise ValueError("window content must be the ordered source-unit content")
         return self
 
 
@@ -326,6 +361,48 @@ class GenerationPlanner:
             jobs=tuple(jobs),
             batches=batches,
         )
+
+    def plan_replacements(
+        self,
+        parent: GenerationPlan,
+        *,
+        accepted_counts: Mapping[QuestionType, int],
+        attempt: int,
+        target_quotas: Mapping[QuestionType, int] | None = None,
+    ) -> GenerationPlan:
+        """Plan only missing strata under a new immutable attempt identity."""
+        if attempt <= 0:
+            raise ValueError("replacement attempt must be positive")
+        targets = target_quotas or self.config.quotas
+        deficits = {
+            kind: max(0, target - accepted_counts.get(kind, 0))
+            for kind, target in targets.items()
+        }
+        deficits = {kind: count for kind, count in deficits.items() if count}
+        if not deficits:
+            raise ValueError("replacement plan requires at least one quota deficit")
+        windows = tuple(dict.fromkeys(job.window for job in parent.jobs))
+        replacement_config = self.config.model_copy(update={"quotas": deficits})
+        planned = GenerationPlanner(replacement_config).plan(
+            windows,
+            corpus_snapshot_id=parent.corpus_snapshot_id,
+            model_id=parent.model_id,
+        )
+        identity = {
+            "schema": "benchmark-replacement-plan-v1",
+            "parent_plan_hash": parent.plan_hash,
+            "attempt": attempt,
+            "deficits": {kind.value: count for kind, count in deficits.items()},
+            "planned_hash": planned.plan_hash,
+        }
+        plan_hash = canonical_json_hash(identity)
+        batches = tuple(
+            batch.model_copy(
+                update={"batch_id": f"replacement-{attempt:04d}-{index:04d}"}
+            )
+            for index, batch in enumerate(planned.batches)
+        )
+        return planned.model_copy(update={"plan_hash": plan_hash, "batches": batches})
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +557,7 @@ class FileBatchRepository:
     def _path(self, plan_hash: str, batch_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{64}", plan_hash):
             raise ValueError("plan hash must be a SHA-256 digest")
-        if not re.fullmatch(r"batch-\d{4,}", batch_id):
+        if not re.fullmatch(r"(?:batch|replacement-\d{4})-\d{4,}", batch_id):
             raise ValueError("batch ID has an invalid shape")
         return self.directory / f"{plan_hash}-{batch_id}.json"
 
@@ -545,7 +622,19 @@ class BenchmarkGenerator:
                     "cache_hit": response.cache_hit,
                 }
             )
-            authoritative.append(candidate.model_copy(update={"generator": metadata}))
+            authoritative.append(
+                candidate.model_copy(
+                    update={
+                        "candidate_id": canonical_json_hash(
+                            {
+                                "plan_hash": plan.plan_hash,
+                                "job_ordinal": job.ordinal,
+                            }
+                        ),
+                        "generator": metadata,
+                    }
+                )
+            )
         candidates = tuple(authoritative)
         stored_batch = StoredBatch(
             plan_hash=plan.plan_hash,
@@ -591,10 +680,20 @@ def projected_generation_cost(
 def controlled_unanswerable(
     *,
     question: str,
+    original_fact: str,
     asserted_absent_fact: str,
     document_windows: Sequence[SourceWindow],
     metadata: GeneratorMetadata,
 ) -> QuestionCandidate:
+    target_documents = {window.document_id for window in document_windows}
+    if len(target_documents) != 1:
+        raise ValueError("controlled unanswerable requires exactly one target document")
+    target_document_id = next(iter(target_documents))
+    if not any(
+        _search_text(original_fact) in _search_text(window.content)
+        for window in document_windows
+    ):
+        raise ValueError("original fact is not present in the target document")
     normalized_fact = _search_text(asserted_absent_fact)
     if not normalized_fact:
         raise ValueError("controlled absent fact cannot be blank")
@@ -616,6 +715,11 @@ def controlled_unanswerable(
         difficulty=Difficulty.HARD,
         answerable=False,
         asserted_absent_facts=(asserted_absent_fact,),
+        unanswerable_transform=UnanswerableTransform(
+            target_document_id=target_document_id,
+            original_fact=original_fact,
+            transformed_fact=asserted_absent_fact,
+        ),
         generator=metadata,
         validation=ValidationStatus(decision=ValidationDecision.UNVALIDATED),
     )
@@ -651,11 +755,13 @@ def _candidate_payload_hash(candidates: Sequence[QuestionCandidate]) -> str:
 
 def _validate_candidate_window(candidate: QuestionCandidate, window: SourceWindow) -> None:
     for span in candidate.evidence_spans:
-        if (
-            span.document_id != window.document_id
-            or not window.page_start <= span.page <= window.page_end
-            or span.chunk_id not in window.chunk_ids
-            or _search_text(span.text) not in _search_text(window.content)
+        units = tuple(
+            unit
+            for unit in window.source_units
+            if unit.page == span.page and unit.chunk_id == span.chunk_id
+        )
+        if span.document_id != window.document_id or not any(
+            _search_text(span.text) in _search_text(unit.content) for unit in units
         ):
             raise ValueError("candidate evidence is outside the assigned source window")
 

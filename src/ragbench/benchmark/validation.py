@@ -18,6 +18,16 @@ from ragbench.benchmark.generation import (
     ValidationDecision,
     ValidationStatus,
 )
+from ragbench.core.hashing import canonical_json_hash
+
+NORMAL_SCOPE_QUOTAS: dict[QuestionType, int] = {
+    QuestionType.FACT: 200,
+    QuestionType.NUMERIC_TABLE: 200,
+    QuestionType.COMPARISON: 167,
+    QuestionType.MULTIHOP: 167,
+    QuestionType.UNANSWERABLE: 133,
+    QuestionType.COMPLEX_SUMMARY: 133,
+}
 
 
 class CompletionLevel(StrEnum):
@@ -64,33 +74,51 @@ class ValidationReport:
     difficulty_distribution: dict[str, int]
     document_distribution: dict[str, int]
     duplicate_groups: tuple[tuple[str, ...], ...]
+    quota_deficits: dict[str, int]
+    validation_run_hash: str
+    validation_config: dict[str, object]
 
 
 def report_payload(report: ValidationReport) -> dict[str, object]:
     """Return a stable public validation summary without benchmark content."""
     return {
         "accepted_count": report.accepted_count,
-        "completion_level": completion_level(report.accepted_count).value,
+        "completion_level": completion_level(report.type_distribution).value,
         "difficulty_distribution": report.difficulty_distribution,
         "document_distribution": report.document_distribution,
         "duplicate_groups": [list(group) for group in report.duplicate_groups],
+        "quota_deficits": report.quota_deficits,
         "rejected_count": report.rejected_count,
         "rejection_counts": report.rejection_counts,
         "rejection_samples": {
             key: list(value) for key, value in report.rejection_samples.items()
         },
         "type_distribution": report.type_distribution,
+        "validation_run_hash": report.validation_run_hash,
+        "validation_config": report.validation_config,
     }
 
 
-def completion_level(valid_count: int) -> CompletionLevel:
-    if valid_count < 0:
-        raise ValueError("valid_count cannot be negative")
-    if valid_count >= 1_500:
+def quota_deficits(
+    type_distribution: Mapping[str, int], *, normal_scope: bool = False
+) -> dict[str, int]:
+    quotas = NORMAL_SCOPE_QUOTAS if normal_scope else DEFAULT_QUOTAS
+    return {
+        kind.value: target - type_distribution.get(kind.value, 0)
+        for kind, target in quotas.items()
+        if type_distribution.get(kind.value, 0) < target
+    }
+
+
+def completion_level(type_distribution: Mapping[str, int]) -> CompletionLevel:
+    if any(count < 0 for count in type_distribution.values()):
+        raise ValueError("type distribution counts cannot be negative")
+    total = sum(type_distribution.values())
+    if not quota_deficits(type_distribution):
         return CompletionLevel.TARGET
-    if valid_count >= 1_000:
+    if not quota_deficits(type_distribution, normal_scope=True):
         return CompletionLevel.NORMAL_FLOOR
-    if valid_count >= 800:
+    if total >= 800:
         return CompletionLevel.EMERGENCY_ONLY
     return CompletionLevel.INSUFFICIENT
 
@@ -113,12 +141,18 @@ def validate_candidates(
     accepted_type_counts: Counter[QuestionType] = Counter()
     accepted_document_counts: Counter[str] = Counter()
     validated: list[QuestionCandidate] = []
+    seen_candidate_ids: set[str] = set()
 
     for candidate in candidates:
         rules: list[str] = []
         evidence_documents = tuple(
             dict.fromkeys(span.document_id for span in candidate.evidence_spans)
         )
+        if candidate.unanswerable_transform is not None:
+            evidence_documents = (candidate.unanswerable_transform.target_document_id,)
+        if candidate.candidate_id in seen_candidate_ids:
+            rules.append("duplicate_candidate_id")
+        seen_candidate_ids.add(candidate.candidate_id)
         if candidate.candidate_id in duplicate_ids:
             rules.append("duplicate_question")
         rules.extend(_evidence_rules(candidate, pages, active_config))
@@ -171,20 +205,34 @@ def validate_candidates(
         for rule in item.validation.rule_codes:
             if len(samples[rule]) < active_config.rejection_sample_limit:
                 samples[rule].append(item.candidate_id)
+    type_distribution = dict(
+        sorted(Counter(item.question_type.value for item in accepted).items())
+    )
+    config_snapshot = _validation_config_snapshot(active_config)
+    validation_run_hash = canonical_json_hash(
+        {
+            "schema": "benchmark-validation-v2",
+            "config": config_snapshot,
+            "candidate_ids": [item.candidate_id for item in candidates],
+            "plan_hashes": sorted({item.generator.plan_hash for item in candidates}),
+            "corpus": [window.model_dump(mode="json") for window in windows],
+        }
+    )
     return ValidationReport(
         items=tuple(validated),
         accepted_count=len(accepted),
         rejected_count=len(validated) - len(accepted),
         rejection_counts=dict(sorted(rejections.items())),
         rejection_samples={key: tuple(value) for key, value in sorted(samples.items())},
-        type_distribution=dict(
-            sorted(Counter(item.question_type.value for item in accepted).items())
-        ),
+        type_distribution=type_distribution,
         difficulty_distribution=dict(
             sorted(Counter(item.difficulty.value for item in accepted).items())
         ),
         document_distribution=dict(sorted(accepted_document_counts.items())),
         duplicate_groups=duplicate_groups,
+        quota_deficits=quota_deficits(type_distribution),
+        validation_run_hash=validation_run_hash,
+        validation_config=config_snapshot,
     )
 
 
@@ -216,15 +264,18 @@ def _evidence_rules(
         if page_windows is None:
             rules.append("impossible_page")
             continue
-        chunk_windows = tuple(
-            window for window in page_windows if span.chunk_id in window.chunk_ids
+        exact_units = tuple(
+            unit
+            for window in page_windows
+            for unit in window.source_units
+            if unit.page == span.page and unit.chunk_id == span.chunk_id
         )
-        if not chunk_windows:
+        if not exact_units:
             rules.append("impossible_chunk")
             continue
         if not any(
-            _evidence_matches(span.text, window.content, config.evidence_similarity_threshold)
-            for window in chunk_windows
+            _evidence_matches(span.text, unit.content, config.evidence_similarity_threshold)
+            for unit in exact_units
         ):
             rules.append("evidence_not_found")
     return rules
@@ -269,7 +320,7 @@ def _answer_rules(candidate: QuestionCandidate) -> list[str]:
     elif candidate.question_type not in {QuestionType.FACT, QuestionType.NUMERIC_TABLE}:
         answer_tokens = _content_tokens(candidate.gold_answer)
         evidence_tokens = _content_tokens(evidence)
-        if answer_tokens and not answer_tokens.intersection(evidence_tokens):
+        if answer_tokens and not answer_tokens.issubset(evidence_tokens):
             rules.append("answer_not_supported")
     return rules
 
@@ -279,12 +330,20 @@ def _unanswerable_rules(
 ) -> list[str]:
     if candidate.answerable:
         return []
-    documents = tuple(document_text.values())
-    return [
-        "asserted_absent_fact_present"
-        for fact in candidate.asserted_absent_facts
-        if any(_search_text(fact) in _search_text(content) for content in documents)
-    ]
+    transform = candidate.unanswerable_transform
+    if transform is None:  # schema normally prevents this
+        return ["malformed_unanswerable"]
+    target = document_text.get(transform.target_document_id)
+    if target is None:
+        return ["impossible_target_document"]
+    rules: list[str] = []
+    if _search_text(transform.original_fact) not in _search_text(target):
+        rules.append("original_fact_not_found")
+    if _search_text(transform.transformed_fact) in _search_text(target):
+        rules.append("asserted_absent_fact_present")
+    if _search_text(transform.transformed_fact) not in _search_text(candidate.question):
+        rules.append("transformed_fact_not_in_question")
+    return rules
 
 
 def _duplicate_groups(
@@ -339,6 +398,18 @@ def _search_text(value: str) -> str:
 
 def _numbers(value: str) -> set[str]:
     return {match.replace(",", "") for match in re.findall(r"[-+]?\d[\d,]*(?:\.\d+)?", value)}
+
+
+def _validation_config_snapshot(config: ValidationConfig) -> dict[str, object]:
+    assert config.quotas is not None
+    return {
+        "quotas": {kind.value: count for kind, count in config.quotas.items()},
+        "per_document_cap": config.per_document_cap,
+        "duplicate_similarity_threshold": config.duplicate_similarity_threshold,
+        "evidence_similarity_threshold": config.evidence_similarity_threshold,
+        "rejection_sample_limit": config.rejection_sample_limit,
+        "contamination_terms": list(config.contamination_terms),
+    }
 
 
 def _content_tokens(value: str) -> set[str]:

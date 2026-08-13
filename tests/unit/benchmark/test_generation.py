@@ -25,6 +25,7 @@ from ragbench.benchmark.generation import (
     MemoryBatchRepository,
     QuestionCandidate,
     QuestionType,
+    SourceUnit,
     SourceWindow,
     ValidationDecision,
     ValidationStatus,
@@ -46,7 +47,20 @@ def _windows() -> tuple[SourceWindow, ...]:
             page_start=page,
             page_end=page,
             chunk_ids=(f"chunk-{doc}-{page}",),
-            content=f"문서 {doc}의 {page}페이지 근거입니다. 매출은 {doc * 100 + page}원입니다.",
+            content=(
+                f"문서 {doc}의 {page}페이지 근거입니다. "
+                f"매출은 {doc * 100 + page}원입니다."
+            ),
+            source_units=(
+                SourceUnit(
+                    page=page,
+                    chunk_id=f"chunk-{doc}-{page}",
+                    content=(
+                        f"문서 {doc}의 {page}페이지 근거입니다. "
+                        f"매출은 {doc * 100 + page}원입니다."
+                    ),
+                ),
+            ),
         )
         for doc in range(1, 7)
         for page in range(1, 11)
@@ -302,6 +316,7 @@ def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> Non
     window = _windows()[0]
     candidate = controlled_unanswerable(
         question="첫 문서의 직원 수는 99명인가?",
+        original_fact="매출은 101원",
         asserted_absent_fact="직원 수는 99명",
         document_windows=(window,),
         metadata=GeneratorMetadata(
@@ -315,14 +330,40 @@ def test_controlled_unanswerable_requires_transformed_fact_to_be_absent() -> Non
     )
     assert candidate.answerable is False
     assert candidate.evidence_spans == ()
+    assert candidate.unanswerable_transform is not None
+    assert candidate.unanswerable_transform.target_document_id == "doc-1"
 
     with pytest.raises(ValueError, match="present"):
         controlled_unanswerable(
             question="매출은 101원인가?",
+            original_fact="매출은 101원",
             asserted_absent_fact="매출은 101원",
             document_windows=(window,),
             metadata=candidate.generator,
         )
+
+
+def test_replacement_plan_refills_only_quota_deficits_with_new_global_ids() -> None:
+    """Catch stopping after one rejected batch or reusing model-controlled IDs across attempts."""
+    config = GenerationConfig(
+        quotas={QuestionType.FACT: 2, QuestionType.UNANSWERABLE: 1},
+        per_document_cap=10,
+        per_page_cap=10,
+        batch_size=2,
+    )
+    planner = GenerationPlanner(config)
+    initial = planner.plan(
+        _windows()[:3], corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
+    )
+    replacement = planner.plan_replacements(
+        initial,
+        accepted_counts={QuestionType.FACT: 1, QuestionType.UNANSWERABLE: 1},
+        attempt=1,
+    )
+
+    assert tuple(job.question_type for job in replacement.jobs) == (QuestionType.FACT,)
+    assert replacement.plan_hash != initial.plan_hash
+    assert replacement.batches[0].batch_id.startswith("replacement-0001-")
 
 
 @pytest.mark.asyncio

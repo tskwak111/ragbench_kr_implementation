@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import tempfile
+from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -22,11 +25,19 @@ from ragbench.benchmark.generation import (
     GenerationConfig,
     GenerationPlanner,
     QuestionCandidate,
+    QuestionType,
     SourceWindow,
     generation_execution_blockers,
     projected_generation_cost,
 )
-from ragbench.benchmark.validation import ValidationConfig, report_payload, validate_candidates
+from ragbench.benchmark.validation import (
+    NORMAL_SCOPE_QUOTAS,
+    CompletionLevel,
+    ValidationConfig,
+    completion_level,
+    report_payload,
+    validate_candidates,
+)
 from ragbench.core.config import Settings
 from ragbench.core.money import BudgetGuard, SqlAlchemyBudgetRepository
 from ragbench.db.models import ApiUsage, BudgetReservation
@@ -54,6 +65,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-paid", action="store_true")
     parser.add_argument("--confirm-plan")
+    parser.add_argument("--allow-reduced-scope", action="store_true")
+    parser.add_argument("--max-replacement-rounds", type=int, default=10)
     return parser.parse_args()
 
 
@@ -119,19 +132,48 @@ def _write_results(
     report: dict[str, object],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    candidate_path = output_dir / f"{plan_hash}-candidates.jsonl"
-    report_path = output_dir / f"{plan_hash}-validation-report.json"
+    validation_run_hash = report.get("validation_run_hash")
+    if not isinstance(validation_run_hash, str):
+        raise BenchmarkGenerationError("validation report is missing its immutable identity")
+    prefix = f"{plan_hash}-{validation_run_hash}"
+    candidate_path = output_dir / f"{prefix}-candidates.jsonl"
+    report_path = output_dir / f"{prefix}-validation-report.json"
     candidate_payload = "".join(
         item.model_dump_json() + "\n" for item in candidates
-    )
-    candidate_path.write_text(candidate_payload, encoding="utf-8")
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    ).encode()
+    report_bytes = (
+        json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    _write_immutable(candidate_path, candidate_payload)
+    _write_immutable(report_path, report_bytes)
+
+
+def _write_immutable(path: Path, payload: bytes) -> None:
+    if path.exists():
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != payload:
+            raise BenchmarkGenerationError("immutable benchmark artifact already conflicts")
+        return
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if not path.is_file() or path.is_symlink() or path.read_bytes() != payload:
+                raise BenchmarkGenerationError(
+                    "immutable benchmark artifact already conflicts"
+                ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.max_replacement_rounds < 0:
+        raise BenchmarkGenerationError("--max-replacement-rounds cannot be negative")
     windows = _load_windows(args.windows)
     generation_config, validation_config = _load_config(args.config)
     settings = Settings()
@@ -209,11 +251,32 @@ async def _run(args: argparse.Namespace) -> int:
             config=generation_config,
         )
         generated: list[QuestionCandidate] = []
-        for batch in plan.batches:
-            generated.extend(await generator.generate_batch(plan, batch))
-        report = validate_candidates(
-            tuple(generated), windows, config=validation_config
-        )
+        current_plan = plan
+        report = None
+        for attempt in range(args.max_replacement_rounds + 1):
+            for batch in current_plan.batches:
+                generated.extend(await generator.generate_batch(current_plan, batch))
+            report = validate_candidates(tuple(generated), windows, config=validation_config)
+            level = completion_level(report.type_distribution)
+            if level is CompletionLevel.TARGET or (
+                args.allow_reduced_scope and level is CompletionLevel.NORMAL_FLOOR
+            ):
+                break
+            if attempt == args.max_replacement_rounds:
+                break
+            accepted_counts = Counter(
+                {
+                    QuestionType(kind): count
+                    for kind, count in report.type_distribution.items()
+                }
+            )
+            current_plan = GenerationPlanner(generation_config).plan_replacements(
+                plan,
+                accepted_counts=accepted_counts,
+                attempt=attempt + 1,
+                target_quotas=(NORMAL_SCOPE_QUOTAS if args.allow_reduced_scope else None),
+            )
+        assert report is not None
         summary = report_payload(report)
         _write_results(args.output_dir, plan.plan_hash, report.items, summary)
         print(
@@ -228,7 +291,12 @@ async def _run(args: argparse.Namespace) -> int:
                 sort_keys=True,
             )
         )
-        return 0 if report.accepted_count >= generation_config.normal_completion_floor else 3
+        achieved = completion_level(report.type_distribution)
+        if achieved is CompletionLevel.TARGET:
+            return 0
+        if args.allow_reduced_scope and achieved is CompletionLevel.NORMAL_FLOOR:
+            return 0
+        return 3
     finally:
         if gateway is not None:
             await gateway.aclose()

@@ -76,3 +76,32 @@ action, PostgreSQL call, sealed-gold access, private corpus access, or real benc
 was performed. Consequently, neither the 1,500 target nor the 1,000 normal completion floor is
 claimed. Reaching either threshold remains an explicitly approved live data-operation after
 fresh pricing and budget review.
+
+## Independent review corrections
+
+The first independent read-only review found no Critical issues and seven Important issues. Its
+verdict was not ready: one-shot generation did not replace rejected strata; completion ignored
+quota deficits; aggregate windows could misbind a span to the wrong page/chunk; complex support
+was too permissive; controlled negatives lacked target-document transformation provenance;
+validation settings were absent from artifact identity; and candidate IDs were only batch-local.
+
+Each finding received an adversarial RED test and implementation correction:
+
+- replacement plans now contain only deficient strata and the CLI resumes bounded replacement
+  rounds until exact quotas, or until the explicit `--allow-reduced-scope` 1,000-item balanced
+  distribution, are met;
+- completion and reports expose per-type deficits and require the exact full or approved balanced
+  reduced distribution rather than a raw total;
+- source windows contain exact page/chunk units and evidence is checked only against its claimed
+  unit;
+- non-fact answer support fails closed unless all normalized answer content tokens occur in the
+  evidence;
+- controlled negatives record target document, original fact, transformed fact, and operation,
+  then verify original presence, transformed absence, and question linkage in that document;
+- validation config and corpus inputs produce a validation-run hash; final artifacts include both
+  generation and validation hashes and use conflict-refusing atomic writes;
+- candidate IDs are derived server-side from plan hash and job ordinal, while the validator also
+  rejects duplicate IDs globally.
+
+Fresh post-review verification raised the focused suite to 24 passing tests and the complete
+offline suite to `287 passed, 4 skipped`; Ruff, strict mypy, and `git diff --check` remained clean.

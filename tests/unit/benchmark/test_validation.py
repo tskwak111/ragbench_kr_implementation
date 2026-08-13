@@ -7,11 +7,13 @@ from collections import Counter
 import pytest
 
 from ragbench.benchmark.generation import (
+    DEFAULT_QUOTAS,
     Difficulty,
     EvidenceSpan,
     GeneratorMetadata,
     QuestionCandidate,
     QuestionType,
+    SourceUnit,
     SourceWindow,
     ValidationDecision,
     ValidationStatus,
@@ -20,6 +22,7 @@ from ragbench.benchmark.validation import (
     CompletionLevel,
     ValidationConfig,
     completion_level,
+    quota_deficits,
     report_payload,
     validate_candidates,
 )
@@ -70,6 +73,13 @@ def _corpus() -> tuple[SourceWindow, ...]:
             page_end=1,
             chunk_ids=("c1",),
             content="2025년 매출은 123원이다. 영업이익은 45원이다.",
+            source_units=(
+                SourceUnit(
+                    page=1,
+                    chunk_id="c1",
+                    content="2025년 매출은 123원이다. 영업이익은 45원이다.",
+                ),
+            ),
         ),
         SourceWindow(
             window_id="w2",
@@ -79,6 +89,7 @@ def _corpus() -> tuple[SourceWindow, ...]:
             page_end=2,
             chunk_ids=("c2",),
             content="직원 수는 30명이다.",
+            source_units=(SourceUnit(page=2, chunk_id="c2", content="직원 수는 30명이다."),),
         ),
     )
 
@@ -144,6 +155,11 @@ def test_unanswerable_absence_and_contamination_are_checked_across_document() ->
         difficulty=Difficulty.HARD,
         answerable=False,
         asserted_absent_facts=("직원 수는 30명",),
+        unanswerable_transform={
+            "target_document_id": "doc-1",
+            "original_fact": "매출은 123원",
+            "transformed_fact": "직원 수는 30명",
+        },
         generator=_metadata("negative"),
         validation=ValidationStatus(decision=ValidationDecision.UNVALIDATED),
     )
@@ -183,11 +199,22 @@ def test_quota_document_caps_and_report_distributions_are_deterministic() -> Non
 
 def test_completion_floor_distinguishes_normal_dod_from_emergency_only() -> None:
     """Catch the emergency 800-item escape hatch being reported as normal completion."""
-    assert completion_level(1500) is CompletionLevel.TARGET
-    assert completion_level(1000) is CompletionLevel.NORMAL_FLOOR
-    assert completion_level(999) is CompletionLevel.EMERGENCY_ONLY
-    assert completion_level(800) is CompletionLevel.EMERGENCY_ONLY
-    assert completion_level(799) is CompletionLevel.INSUFFICIENT
+    exact = {kind.value: count for kind, count in DEFAULT_QUOTAS.items()}
+    normal = {
+        "fact": 200,
+        "numeric_table": 200,
+        "comparison": 167,
+        "multihop": 167,
+        "unanswerable": 133,
+        "complex_summary": 133,
+    }
+    assert completion_level(exact) is CompletionLevel.TARGET
+    assert completion_level(normal) is CompletionLevel.NORMAL_FLOOR
+    skewed = dict(normal)
+    skewed["fact"] += skewed.pop("unanswerable")
+    assert completion_level(skewed) is CompletionLevel.EMERGENCY_ONLY
+    assert completion_level({"fact": 799}) is CompletionLevel.INSUFFICIENT
+    assert quota_deficits(normal, normal_scope=True) == {}
 
 
 def test_report_payload_is_stable_and_contains_rejection_samples() -> None:
@@ -203,8 +230,67 @@ def test_report_payload_is_stable_and_contains_rejection_samples() -> None:
         "difficulty_distribution": {},
         "document_distribution": {},
         "duplicate_groups": [],
+        "quota_deficits": {
+            "comparison": 250,
+            "complex_summary": 200,
+            "fact": 300,
+            "multihop": 250,
+            "numeric_table": 300,
+            "unanswerable": 200,
+        },
         "rejected_count": 1,
         "rejection_counts": {"numeric_mismatch": 1},
         "rejection_samples": {"numeric_mismatch": ["bad"]},
         "type_distribution": {},
+        "validation_run_hash": report.validation_run_hash,
+        "validation_config": report.validation_config,
     }
+
+
+def test_exact_page_chunk_unit_and_complex_support_fail_closed() -> None:
+    """Catch wrong-unit provenance and hallucinated summaries with one shared token."""
+    multi = SourceWindow(
+        window_id="multi",
+        document_id="doc-1",
+        document_title="보고서",
+        page_start=1,
+        page_end=2,
+        chunk_ids=("c1", "c2"),
+        content="1쪽 실제 근거\n2쪽 다른 회사 자료",
+        source_units=(
+            SourceUnit(page=1, chunk_id="c1", content="1쪽 실제 근거"),
+            SourceUnit(page=2, chunk_id="c2", content="2쪽 다른 회사 자료"),
+        ),
+    )
+    wrong_unit = _candidate("wrong", evidence="1쪽 실제 근거", page=2).model_copy(
+        update={
+            "evidence_spans": (
+                EvidenceSpan(text="1쪽 실제 근거", document_id="doc-1", page=2, chunk_id="c2"),
+            )
+        }
+    )
+    hallucinated = _candidate(
+        "hallucinated",
+        question="회사의 장기 전망을 요약하라",
+        answer="회사는 화성 기지를 설립한다",
+        evidence="회사는 매출을 공개했다",
+        kind=QuestionType.COMPLEX_SUMMARY,
+    )
+
+    wrong_report = validate_candidates((wrong_unit,), (multi,))
+    hallucinated_report = validate_candidates((hallucinated,), _corpus())
+    assert "evidence_not_found" in wrong_report.items[0].validation.rule_codes
+    assert "answer_not_supported" in hallucinated_report.items[0].validation.rule_codes
+
+
+def test_validation_identity_changes_with_rules_and_global_candidate_ids_are_unique() -> None:
+    """Catch artifact overwrites after rule changes and ambiguous duplicate candidate IDs."""
+    first = _candidate("same", question="매출 항목 A는 얼마인가?")
+    second = _candidate("same", question="매출 항목 B는 얼마인가?")
+    report = validate_candidates((first, second), _corpus())
+    changed = validate_candidates(
+        (first,), _corpus(), config=ValidationConfig(evidence_similarity_threshold=0.90)
+    )
+
+    assert "duplicate_candidate_id" in report.items[1].validation.rule_codes
+    assert report.validation_run_hash != changed.validation_run_hash
