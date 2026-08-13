@@ -2,7 +2,8 @@
 """Safely collect one operator-approved local PDF into the private raw corpus.
 
 This collector requires POSIX ``O_NOFOLLOW``, directory file descriptors, and
-``link(..., dir_fd=...)``. Platforms without those primitives fail closed.
+``link(..., dir_fd=...)``. Destination directories must be private to the
+effective UID. Platforms without those primitives fail closed.
 """
 
 from __future__ import annotations
@@ -91,6 +92,22 @@ def _open_secure_directory(path: Path) -> Iterator[int]:
         os.close(descriptor)
 
 
+@contextmanager
+def _open_private_directory(path: Path) -> Iterator[int]:
+    """Open a no-follow directory owned by this EUID with mode 0700 or stricter."""
+    with _open_secure_directory(path) as descriptor:
+        metadata = os.fstat(descriptor)
+        if metadata.st_uid != os.geteuid():
+            raise PermissionError(
+                f"destination directory must be owned by effective UID {os.geteuid()}: {path}"
+            )
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise PermissionError(
+                f"destination directory permits group/world access; run chmod 0700 {path}"
+            )
+        yield descriptor
+
+
 def _relative_regular_file(path: Path, root: Path) -> str:
     """Require a lexical child path without traversal; components are opened no-follow later."""
     try:
@@ -150,12 +167,10 @@ def _write_all(descriptor: int, payload: bytes) -> None:
 
 
 class _StagedFile:
-    """A fsynced temporary inode, identified so rollback cannot remove another writer's file."""
+    """A fsynced temporary name created exclusively by this invocation."""
 
-    def __init__(self, *, name: str, device: int, inode: int) -> None:
+    def __init__(self, *, name: str) -> None:
         self.name = name
-        self.device = device
-        self.inode = inode
 
 
 def _new_temporary_name() -> str:
@@ -175,8 +190,7 @@ def _stage_bytes(directory_fd: int, payload: bytes) -> _StagedFile:
         )
         _write_all(descriptor, payload)
         os.fsync(descriptor)
-        metadata = os.fstat(descriptor)
-        return _StagedFile(name=name, device=metadata.st_dev, inode=metadata.st_ino)
+        return _StagedFile(name=name)
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(name, dir_fd=directory_fd)
@@ -187,12 +201,8 @@ def _stage_bytes(directory_fd: int, payload: bytes) -> _StagedFile:
 
 
 def _cleanup_staged(directory_fd: int, staged: _StagedFile) -> None:
-    """Remove a still-owned staging inode; a replaced temp name is left untouched."""
-    try:
-        metadata = os.stat(staged.name, dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return
-    if metadata.st_dev == staged.device and metadata.st_ino == staged.inode:
+    """Remove only a temp name generated and opened exclusively by this invocation."""
+    with suppress(FileNotFoundError):
         os.unlink(staged.name, dir_fd=directory_fd)
 
 
@@ -273,9 +283,10 @@ def _stage_pdf(source_fd: int, raw_fd: int) -> tuple[_StagedFile, str, int]:
         os.fsync(temporary_fd)
         with os.fdopen(os.dup(temporary_fd), "rb") as staged:
             page_count = len(PdfReader(staged, strict=True).pages)
-        metadata = os.fstat(temporary_fd)
+        if page_count <= 0:
+            raise ValueError("PDF must contain at least one page")
         return (
-            _StagedFile(name=temporary_name, device=metadata.st_dev, inode=metadata.st_ino),
+            _StagedFile(name=temporary_name),
             digest.hexdigest(),
             page_count,
         )
@@ -342,8 +353,8 @@ def main() -> int:
         source_fd, source_path = _open_source_descriptor(args.source, args.approved_root)
         try:
             with (
-                _open_secure_directory(args.raw_dir) as raw_fd,
-                _open_secure_directory(args.private_output_dir) as private_fd,
+                _open_private_directory(args.raw_dir) as raw_fd,
+                _open_private_directory(args.private_output_dir) as private_fd,
                 _collector_lock(private_fd),
             ):
                 destination_name = f"{args.document_id}.pdf"

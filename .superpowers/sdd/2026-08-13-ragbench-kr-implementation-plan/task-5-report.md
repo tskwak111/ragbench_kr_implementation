@@ -88,3 +88,27 @@ Removed final-output rollback entirely. The collector now holds an exclusive `fc
 The PDF stays the final commit marker. The private output directory is fsynced before the PDF link; the raw directory is fsynced immediately after that link. Record/model validation occurs before source staging, including the positive page-count model constraint. Staging cleanup is entered immediately after each stage and compares the expected inode first; cleanup relies on the documented trusted private-directory/cooperating-collector boundary rather than claiming protection against a malicious same-UID writer.
 
 Added regressions for idempotent partial metadata retry, raw-directory fsync ordering after the PDF commit marker, and replaced-temp-name preservation. Existing publication failure tests assert that no final unlink rollback occurs.
+
+## Fix round 4 — exclusive destination boundary and zero-page cleanup
+
+The collector now opens both `raw_dir` and `private_output_dir` through the existing component-by-component no-follow path, then verifies the opened directory descriptor is owned by the current effective UID and has no group/world permission bits. Existing unsafe directories fail closed before PDF staging with an actionable `chmod 0700` error. Unpredictable `O_EXCL` names and the exclusive directory boundary prevent other OS users from replacing temp names; same-UID processes remain the explicitly trusted/cooperating boundary, with no protection claimed against a malicious same-UID process.
+
+Staging cleanup now tracks only the unpredictable names generated and opened exclusively by the invocation and unlinks those names directly within the enforced directory boundary. Final published names are still never unlinked on failure. `_stage_pdf` rejects a parsed PDF with zero pages before it returns, keeping that error inside its own staging cleanup scope.
+
+Added regressions proving zero-page PDFs leave no temp or final artifacts, `0755` raw/private directories fail before staging, a mocked wrong-owner directory fails before staging, and `0700` directories succeed. Existing idempotent retry, no-final-rollback, and raw-directory fsync-order regressions continue to pass. Updated the data setup instructions and corpus-policy ADR with the `0700` requirement and exact same-UID trust boundary.
+
+Fresh verification for this fix round:
+
+```text
+.venv/bin/ruff check .
+All checks passed!
+
+.venv/bin/mypy src/ragbench scripts/collect_corpus.py
+Success: no issues found in 20 source files
+
+.venv/bin/pytest tests/unit/ingestion -q
+30 passed
+
+.venv/bin/pytest -m 'not live and not gold' -q
+108 passed, 2 skipped
+```

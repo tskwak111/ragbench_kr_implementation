@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pypdf import PdfWriter
 
 
 def _collector_module() -> object:
@@ -28,6 +29,18 @@ def _write_pdf(path: Path) -> None:
         b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n"
         b"0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n186\n%%EOF\n"
     )
+
+
+def _write_zero_page_pdf(path: Path) -> None:
+    writer = PdfWriter()
+    with path.open("wb") as destination:
+        writer.write(destination)
+
+
+def _mkdir_private(*paths: Path) -> None:
+    for path in paths:
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
 
 
 def _arguments(approved: Path, source: Path, raw: Path, private: Path) -> list[str]:
@@ -95,12 +108,12 @@ def test_collector_never_overwrites_destination_even_when_raced(tmp_path: Path) 
     approved = tmp_path / "approved"
     raw = tmp_path / "raw"
     approved.mkdir()
-    raw.mkdir()
+    _mkdir_private(raw)
     source = approved / "sample.pdf"
     _write_pdf(source)
     source_fd, _ = module._open_source_descriptor(source, approved)
     try:
-        with module._open_secure_directory(raw) as raw_fd:
+        with module._open_private_directory(raw) as raw_fd:
             module._copy_validate_and_publish(source_fd, raw_fd, "sample.pdf")
             os.lseek(source_fd, 0, os.SEEK_SET)
             with pytest.raises(FileExistsError, match="refusing to overwrite"):
@@ -115,8 +128,7 @@ def test_collector_removes_malformed_staging_file_and_allows_retry(
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     source.write_bytes(b"%PDF-malformed")
     monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
@@ -131,14 +143,111 @@ def test_collector_removes_malformed_staging_file_and_allows_retry(
     assert (raw / "sample.pdf").is_file()
 
 
+def test_zero_page_pdf_leaves_no_staged_or_final_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    _mkdir_private(raw, private)
+    source = approved / "sample.pdf"
+    _write_zero_page_pdf(source)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 1
+    assert not (raw / "sample.pdf").exists()
+    assert not (private / "fragment.yaml").exists()
+    assert not (private / "report.yaml").exists()
+    assert not list(raw.glob(".collect-*.partial"))
+    assert not list(private.glob(".collect-*.partial"))
+
+
+@pytest.mark.parametrize("unsafe_target", ["raw", "private"])
+def test_collector_rejects_group_or_world_accessible_destination_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    unsafe_target: str,
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    _mkdir_private(raw, private)
+    (raw if unsafe_target == "raw" else private).chmod(0o755)
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    staged = False
+
+    def record_stage(*args: object) -> None:
+        nonlocal staged
+        staged = True
+        raise AssertionError("staging must not begin for an unsafe directory")
+
+    monkeypatch.setattr(module, "_stage_pdf", record_stage)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 1
+    assert staged is False
+    assert "chmod 0700" in capsys.readouterr().err
+
+
+def test_collector_rejects_wrong_owner_destination_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    _mkdir_private(raw, private)
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    raw_metadata = raw.stat()
+    original_fstat = module.os.fstat
+    staged = False
+
+    def wrong_owner_for_raw(descriptor: int) -> os.stat_result:
+        metadata = original_fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) != (raw_metadata.st_dev, raw_metadata.st_ino):
+            return metadata
+        fields = list(metadata)
+        fields[4] = os.geteuid() + 1
+        return os.stat_result(fields)
+
+    def record_stage(*args: object) -> None:
+        nonlocal staged
+        staged = True
+        raise AssertionError("staging must not begin for an unsafe directory")
+
+    monkeypatch.setattr(module.os, "fstat", wrong_owner_for_raw)
+    monkeypatch.setattr(module, "_stage_pdf", record_stage)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 1
+    assert staged is False
+    assert "owned by effective UID" in capsys.readouterr().err
+
+
+def test_collector_accepts_private_0700_destination_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    _mkdir_private(raw, private)
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+
+    assert module.main() == 0
+    assert (raw / "sample.pdf").is_file()
+
+
 def test_collector_cli_reports_unknown_license_and_rejects_output_redirection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
@@ -163,8 +272,7 @@ def test_metadata_validation_failure_leaves_no_outputs_and_retry_succeeds(
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     arguments = _arguments(approved, source, raw, private)
@@ -189,8 +297,7 @@ def test_preexisting_metadata_output_fails_before_pdf_and_preserves_file(
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     existing = private / existing_name
@@ -207,14 +314,13 @@ def test_preexisting_metadata_output_fails_before_pdf_and_preserves_file(
 
 
 @pytest.mark.parametrize("failing_link", [1, 2, 3])
-def test_publish_failures_roll_back_only_this_invocations_links(
+def test_publish_failures_leave_final_links_and_remove_staging_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_link: int
 ) -> None:
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     original_link = module.os.link
@@ -244,8 +350,7 @@ def test_partial_metadata_is_idempotently_reused_on_retry(
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     original_link = module.os.link
@@ -274,8 +379,7 @@ def test_raw_directory_fsync_occurs_after_pdf_commit_marker(
     module = _collector_module()
     approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
     approved.mkdir()
-    raw.mkdir()
-    private.mkdir()
+    _mkdir_private(raw, private)
     source = approved / "sample.pdf"
     _write_pdf(source)
     raw_fd = os.open(raw, os.O_RDONLY)
@@ -299,19 +403,14 @@ def test_raw_directory_fsync_occurs_after_pdf_commit_marker(
     assert events.index("pdf-link") < len(events) - 1
 
 
-def test_temp_cleanup_leaves_replaced_name_untouched(tmp_path: Path) -> None:
+def test_temp_cleanup_removes_only_the_invocations_generated_name(tmp_path: Path) -> None:
     module = _collector_module()
     directory = tmp_path / "private"
-    directory.mkdir()
-    with module._open_secure_directory(directory) as directory_fd:
+    _mkdir_private(directory)
+    unrelated = directory / ".collect-unrelated.partial"
+    unrelated.write_bytes(b"unrelated")
+    with module._open_private_directory(directory) as directory_fd:
         staged = module._stage_bytes(directory_fd, b"owned")
-        os.unlink(staged.name, dir_fd=directory_fd)
-        replacement_fd = os.open(
-            staged.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory_fd
-        )
-        try:
-            os.write(replacement_fd, b"replacement")
-        finally:
-            os.close(replacement_fd)
         module._cleanup_staged(directory_fd, staged)
-    assert (directory / staged.name).read_bytes() == b"replacement"
+    assert not (directory / staged.name).exists()
+    assert unrelated.read_bytes() == b"unrelated"
