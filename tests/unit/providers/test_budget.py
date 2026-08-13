@@ -133,6 +133,32 @@ async def test_failed_reservation_is_released_for_later_work() -> None:
     assert repository.reservations[replacement.id].status == "settled"
 
 
+@pytest.mark.asyncio
+async def test_cache_hit_accounting_rejects_nonzero_cost() -> None:
+    """Catch bypassing reservation through the cache-hit-only usage path."""
+    repository = MemoryBudgetRepository()
+    guard = BudgetGuard(repository, hard_limit=Decimal("135.00"))
+    record_cache_hit = getattr(guard, "record_cache_hit", None)
+    assert callable(record_cache_hit)
+
+    with pytest.raises(ValueError, match="zero-cost"):
+        await record_cache_hit(
+            correlation_id=uuid4(),
+            operation="generate",
+            model_id="solar-pro4",
+            usage=Usage(1, 1, 0, Decimal("0.01")),
+        )
+    with pytest.raises(ValueError, match="zero-cost"):
+        await repository.record_cache_hit(
+            correlation_id=uuid4(),
+            operation="generate",
+            model_id="solar-pro4",
+            usage=Usage(1, 1, 0, Decimal("0.01")),
+        )
+    assert not hasattr(guard, "record_usage")
+    assert repository.usages == []
+
+
 class _Transaction:
     async def __aenter__(self) -> None:
         return None

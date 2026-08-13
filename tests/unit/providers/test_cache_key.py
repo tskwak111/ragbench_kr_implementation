@@ -1,5 +1,6 @@
 """Deterministic provider request hashing contracts."""
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -57,6 +58,7 @@ class _Transaction:
 class _StatementSession:
     def __init__(self) -> None:
         self.statement: Any = None
+        self.events: list[tuple[str, int]] = []
 
     async def __aenter__(self) -> "_StatementSession":
         return self
@@ -67,8 +69,15 @@ class _StatementSession:
     def begin(self) -> _Transaction:
         return _Transaction()
 
-    async def execute(self, statement: Any) -> None:
+    async def execute(self, statement: Any, params: dict[str, int] | None = None) -> None:
         self.statement = statement
+        rendered = str(statement)
+        if "pg_advisory_lock" in rendered:
+            assert params is not None
+            self.events.append(("lock", params["lock_id"]))
+        if "pg_advisory_unlock" in rendered:
+            assert params is not None
+            self.events.append(("unlock", params["lock_id"]))
 
 
 class _StatementFactory:
@@ -96,3 +105,66 @@ async def test_sql_cache_put_replaces_expired_conflict() -> None:
     assert "ON CONFLICT" in rendered
     assert "DO UPDATE" in rendered
     assert "expires_at" in rendered
+
+
+@pytest.mark.asyncio
+async def test_memory_singleflight_cleans_unique_key_locks() -> None:
+    """Catch unbounded retention of completed singleflight locks."""
+    from ragbench.providers.upstage.client import MemoryProviderStore
+
+    store = MemoryProviderStore()
+    for ordinal in range(200):
+        async with store.singleflight(f"cache-key-{ordinal}"):
+            pass
+
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_singleflight_cleans_cancelled_waiter() -> None:
+    """Catch retaining a key lock when a waiting request is cancelled."""
+    from ragbench.providers.upstage.client import MemoryProviderStore
+
+    store = MemoryProviderStore()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder() -> None:
+        async with store.singleflight("shared"):
+            entered.set()
+            await release.wait()
+
+    async def waiter() -> None:
+        async with store.singleflight("shared"):
+            pass
+
+    holder_task = asyncio.create_task(holder())
+    await entered.wait()
+    waiter_task = asyncio.create_task(waiter())
+    await asyncio.sleep(0)
+    waiter_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter_task
+    release.set()
+    await holder_task
+
+    assert store.singleflight_lock_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_singleflight_uses_deterministic_signed_lock_and_unlocks() -> None:
+    """Catch losing cross-process exclusion or leaking PostgreSQL session advisory locks."""
+    first_session = _StatementSession()
+    first_store = SqlAlchemyProviderStore(_StatementFactory(first_session))
+    async with first_store.singleflight("a" * 64):
+        assert first_session.events[0][0] == "lock"
+    first_lock_id = first_session.events[0][1]
+
+    second_session = _StatementSession()
+    second_store = SqlAlchemyProviderStore(_StatementFactory(second_session))
+    async with second_store.singleflight("b" * 64):
+        pass
+
+    assert first_session.events == [("lock", first_lock_id), ("unlock", first_lock_id)]
+    assert -(2**63) <= first_lock_id < 2**63
+    assert second_session.events[0][1] != first_lock_id

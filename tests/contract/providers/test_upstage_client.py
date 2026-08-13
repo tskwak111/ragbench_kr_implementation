@@ -318,6 +318,79 @@ async def test_parse_uses_official_document_digitization_multipart_contract() ->
     assert 'name="base64_encoding"' in body and "['table']" in body
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_cost"),
+    [("standard", Decimal("0.010000")), ("enhanced", Decimal("0.030000"))],
+)
+@pytest.mark.asyncio
+@respx.mock
+async def test_parse_mode_is_consistent_in_form_and_pricing(
+    mode: str, expected_cost: Decimal
+) -> None:
+    """Catch pricing one parse mode while dispatching another mode on the wire."""
+    route = respx.post(f"{BASE_URL}/document-digitization").mock(
+        return_value=httpx.Response(200, json={"content": "parsed"})
+    )
+    repository = MemoryBudgetRepository()
+    gateway = _gateway(repository=repository)
+
+    await gateway.parse(
+        ParseRequest(
+            model_id="document-parse",
+            document_sha256=("c" if mode == "standard" else "d") * 64,
+            content=b"%PDF-mode",
+            billable_pages=1,
+            mode=mode,
+        )
+    )
+    await gateway.aclose()
+
+    body = route.calls[0].request.content.decode("utf-8")
+    assert 'name="mode"' in body and mode in body
+    assert repository.usages[0].usage.estimated_cost_usd == expected_cost
+
+
+@pytest.mark.asyncio
+async def test_parse_provider_params_cannot_override_mode() -> None:
+    """Catch generic provider parameters overriding the priced and cached parse mode."""
+    gateway = _gateway()
+
+    with pytest.raises(ValueError, match="reserved provider parameter.*mode"):
+        await gateway.parse(
+            ParseRequest(
+                model_id="document-parse",
+                document_sha256="e" * 64,
+                content=b"%PDF-mode-override",
+                billable_pages=1,
+                mode="standard",
+                provider_params={"mode": "enhanced"},
+            )
+        )
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_parse_modes_do_not_alias_in_cache() -> None:
+    """Catch omitting the authoritative parse mode from deterministic cache material."""
+    route = respx.post(f"{BASE_URL}/document-digitization").mock(
+        return_value=httpx.Response(200, json={"content": "parsed"})
+    )
+    gateway = _gateway()
+    common = {
+        "model_id": "document-parse",
+        "document_sha256": "f" * 64,
+        "content": b"%PDF-same-document",
+        "billable_pages": 1,
+    }
+
+    await gateway.parse(ParseRequest(**common, mode="standard"))
+    await gateway.parse(ParseRequest(**common, mode="enhanced"))
+    await gateway.aclose()
+
+    assert route.call_count == 2
+
+
 class _FailingStore(MemoryProviderStore):
     async def put(
         self,
@@ -450,6 +523,45 @@ async def test_concurrent_identical_misses_coalesce_to_one_paid_call() -> None:
     assert route.call_count == 1
     assert len(repository.reservations) == 1
     assert [usage.cache_hit for usage in repository.usages].count(True) == 7
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_two_gateways_sharing_store_coalesce_identical_misses() -> None:
+    """Catch gateway-instance-local locking that permits duplicate paid calls."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_response(request: httpx.Request) -> httpx.Response:
+        del request
+        started.set()
+        await release.wait()
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "답변"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+        )
+
+    route = respx.post(f"{BASE_URL}/chat/completions").mock(side_effect=delayed_response)
+    repository = MemoryBudgetRepository()
+    store = MemoryProviderStore()
+    first = _gateway(repository=repository, store=store)
+    second = _gateway(repository=repository, store=store)
+
+    first_task = asyncio.create_task(first.generate(_request()))
+    second_task = asyncio.create_task(second.generate(_request()))
+    await started.wait()
+    await asyncio.sleep(0)
+    release.set()
+    responses = await asyncio.gather(first_task, second_task)
+    await first.aclose()
+    await second.aclose()
+
+    assert [response.content for response in responses] == ["답변", "답변"]
+    assert route.call_count == 1
+    assert store.singleflight_lock_count == 0
 
 
 @pytest.mark.asyncio

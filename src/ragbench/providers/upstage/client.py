@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,7 +16,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -77,12 +79,21 @@ class ProviderStore(Protocol):
         response: dict[str, Any],
     ) -> None: ...
 
+    def singleflight(self, cache_key: str) -> AbstractAsyncContextManager[None]: ...
+
+
+@dataclass(slots=True)
+class _MemorySingleflightEntry:
+    lock: asyncio.Lock
+    users: int = 0
+
 
 class MemoryProviderStore:
     """Deterministic raw response store for offline and contract testing."""
 
     def __init__(self) -> None:
         self.entries: dict[str, CachedResponse] = {}
+        self._singleflight_entries: dict[str, _MemorySingleflightEntry] = {}
 
     async def get(self, cache_key: str) -> CachedResponse | None:
         cached = self.entries.get(cache_key)
@@ -100,6 +111,29 @@ class MemoryProviderStore:
     ) -> None:
         del operation, model_id
         self.entries[cache_key] = CachedResponse(dict(response))
+
+    @asynccontextmanager
+    async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
+        entry = self._singleflight_entries.setdefault(
+            cache_key, _MemorySingleflightEntry(asyncio.Lock())
+        )
+        entry.users += 1
+        acquired = False
+        try:
+            await entry.lock.acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                entry.lock.release()
+            entry.users -= 1
+            if entry.users == 0 and self._singleflight_entries.get(cache_key) is entry:
+                del self._singleflight_entries[cache_key]
+
+    @property
+    def singleflight_lock_count(self) -> int:
+        """Return retained key-lock count for lifecycle monitoring."""
+        return len(self._singleflight_entries)
 
 
 class SqlAlchemyProviderStore:
@@ -148,6 +182,18 @@ class SqlAlchemyProviderStore:
         async with self._session_factory() as session, session.begin():
             await session.execute(statement)
 
+    @asynccontextmanager
+    async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
+        lock_id = _cache_lock_id(cache_key)
+        async with self._session_factory() as session:
+            await session.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
+            try:
+                yield
+            finally:
+                await session.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id}
+                )
+
 
 Sleep = Callable[[float], Awaitable[None]]
 Jitter = Callable[[float], float]
@@ -180,7 +226,6 @@ class UpstageGateway(ProviderGateway):
         self._budget_guard = budget_guard
         self._store = store
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._key_locks: dict[str, asyncio.Lock] = {}
         self.max_retries = max_retries
         self.max_backoff_seconds = max_backoff_seconds
         self._sleep = sleep or asyncio.sleep
@@ -204,7 +249,7 @@ class UpstageGateway(ProviderGateway):
         cached = await self._store.get(key)
         if cached is not None:
             return await self._cached_generation(request, cached)
-        async with self._key_lock(key):
+        async with self._store.singleflight(key):
             cached = await self._store.get(key)
             if cached is not None:
                 return await self._cached_generation(request, cached)
@@ -295,7 +340,7 @@ class UpstageGateway(ProviderGateway):
         cached = await self._store.get(key)
         if cached is not None:
             return await self._cached_embedding(request, cached)
-        async with self._key_lock(key):
+        async with self._store.singleflight(key):
             cached = await self._store.get(key)
             if cached is not None:
                 return await self._cached_embedding(request, cached)
@@ -339,7 +384,7 @@ class UpstageGateway(ProviderGateway):
     async def parse(self, request: ParseRequest) -> ParsedDocument:
         _reject_reserved_params(
             request.provider_params,
-            {"model", "document"},
+            {"model", "document", "mode"},
         )
         params = {"mode": request.mode, **request.provider_params}
         key = CacheKeyParts(
@@ -361,7 +406,7 @@ class UpstageGateway(ProviderGateway):
         cached = await self._store.get(key)
         if cached is not None:
             return await self._cached_parse(request, cached)
-        async with self._key_lock(key):
+        async with self._store.singleflight(key):
             cached = await self._store.get(key)
             if cached is not None:
                 return await self._cached_parse(request, cached)
@@ -370,7 +415,7 @@ class UpstageGateway(ProviderGateway):
                 response = await self._request(
                     "document-digitization",
                     correlation_id=correlation_id,
-                    data={"model": request.model_id, **request.provider_params},
+                    data={"model": request.model_id, **params},
                     files={
                         "document": (
                             "document.bin",
@@ -412,16 +457,12 @@ class UpstageGateway(ProviderGateway):
         )
         return correlation_id, reservation
 
-    def _key_lock(self, cache_key: str) -> asyncio.Lock:
-        return self._key_locks.setdefault(cache_key, asyncio.Lock())
-
     async def _record_cache_hit(self, *, operation: str, model_id: str, usage: Usage) -> None:
-        await self._budget_guard.record_usage(
+        await self._budget_guard.record_cache_hit(
             correlation_id=uuid4(),
             operation=operation,
             model_id=model_id,
             usage=usage,
-            cache_hit=True,
         )
 
     async def _cached_generation(
@@ -587,6 +628,11 @@ def _reject_reserved_params(params: dict[str, Any], reserved: set[str]) -> None:
     conflicts = sorted(params.keys() & reserved)
     if conflicts:
         raise ValueError(f"reserved provider parameter cannot be overridden: {conflicts[0]}")
+
+
+def _cache_lock_id(cache_key: str) -> int:
+    digest = hashlib.sha256(cache_key.encode()).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
 
 
 __all__ = [

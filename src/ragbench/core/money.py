@@ -62,14 +62,13 @@ class BudgetRepository(Protocol):
 
     async def release(self, reservation_id: UUID) -> None: ...
 
-    async def record_usage(
+    async def record_cache_hit(
         self,
         *,
         correlation_id: UUID,
         operation: str,
         model_id: str,
         usage: Usage,
-        cache_hit: bool,
     ) -> None: ...
 
 
@@ -144,18 +143,17 @@ class MemoryBudgetRepository:
                 reservation.status = "released"
                 reservation.settled_cost_usd = Decimal("0")
 
-    async def record_usage(
+    async def record_cache_hit(
         self,
         *,
         correlation_id: UUID,
         operation: str,
         model_id: str,
         usage: Usage,
-        cache_hit: bool,
     ) -> None:
+        _require_zero_cost_cache_hit(usage)
         async with self._lock:
-            self.settled_cost += usage.estimated_cost_usd
-            self.usages.append(UsageRecord(correlation_id, operation, model_id, usage, cache_hit))
+            self.usages.append(UsageRecord(correlation_id, operation, model_id, usage, True))
 
 
 class SqlAlchemyBudgetRepository:
@@ -253,15 +251,15 @@ class SqlAlchemyBudgetRepository:
                 reservation.settled_cost_usd = Decimal("0")
                 reservation.settled_at = datetime.now(UTC)
 
-    async def record_usage(
+    async def record_cache_hit(
         self,
         *,
         correlation_id: UUID,
         operation: str,
         model_id: str,
         usage: Usage,
-        cache_hit: bool,
     ) -> None:
+        _require_zero_cost_cache_hit(usage)
         async with self._session_factory() as session, session.begin():
             session.add(
                 ApiUsage(
@@ -272,7 +270,7 @@ class SqlAlchemyBudgetRepository:
                     output_tokens=usage.output_tokens,
                     billable_pages=usage.billable_pages,
                     estimated_cost_usd=usage.estimated_cost_usd,
-                    cache_hit=cache_hit,
+                    cache_hit=True,
                 )
             )
 
@@ -315,19 +313,23 @@ class BudgetGuard:
     async def release(self, reservation_id: UUID) -> None:
         await self._repository.release(reservation_id)
 
-    async def record_usage(
+    async def record_cache_hit(
         self,
         *,
         correlation_id: UUID,
         operation: str,
         model_id: str,
         usage: Usage,
-        cache_hit: bool,
     ) -> None:
-        await self._repository.record_usage(
+        _require_zero_cost_cache_hit(usage)
+        await self._repository.record_cache_hit(
             correlation_id=correlation_id,
             operation=operation,
             model_id=model_id,
             usage=usage,
-            cache_hit=cache_hit,
         )
+
+
+def _require_zero_cost_cache_hit(usage: Usage) -> None:
+    if usage.estimated_cost_usd != Decimal("0"):
+        raise ValueError("cache-hit accounting is restricted to zero-cost usage")
