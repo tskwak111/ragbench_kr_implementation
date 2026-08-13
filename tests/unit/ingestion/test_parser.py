@@ -183,7 +183,15 @@ async def test_success_persists_normalized_evidence_and_reconciles_pages(tmp_pat
     assert checkpoint.markdown == "ok"
     assert checkpoint.html == "<p>ok</p>"
     assert checkpoint.elements[0]["category"] == "paragraph"
-    assert checkpoint.page_mappings == ({"page": 1, "source_page": 1},)
+    assert checkpoint.page_mappings == (
+        {
+            "page": 1,
+            "source_page": 1,
+            "element_count": 1,
+            "element_indexes": [0],
+            "provider_page_metadata": {"page": 1, "source_page": 1},
+        },
+    )
     assert checkpoint.raw_response_hash is not None
     assert checkpoint.latency_ms >= 0
     assert checkpoint.cost_usd == Decimal("0.011000")
@@ -210,8 +218,8 @@ async def test_real_provider_schema_derives_pages_from_elements(tmp_path: Path) 
     assert checkpoint is not None
     assert checkpoint.provider_model_version == "2026-08-01"
     assert checkpoint.page_mappings == (
-        {"page": 1, "source_page": 1},
-        {"page": 2, "source_page": 2},
+        {"page": 1, "source_page": 1, "element_count": 1, "element_indexes": [0]},
+        {"page": 2, "source_page": 2, "element_count": 1, "element_indexes": [1]},
     )
     assert checkpoint.elements[1]["category"] == "paragraph"
 
@@ -244,6 +252,135 @@ async def test_provider_schema_derives_content_from_elements(tmp_path: Path) -> 
     assert checkpoint is not None
     assert checkpoint.markdown == "element md"
     assert checkpoint.html == "<p>element</p>"
+
+
+@pytest.mark.asyncio
+async def test_sparse_elements_map_every_manifest_page_without_fabricating_content(
+    tmp_path: Path,
+) -> None:
+    """Catch treating an element-free middle page as a provider page-set failure."""
+    document = _document(tmp_path, "a", 3)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    raw = {
+        "model": "2026-08-01",
+        "elements": [
+            {"page": 1, "category": "paragraph", "content": "first"},
+            {"page": 3, "category": "paragraph", "content": "third"},
+        ],
+        "pages": [
+            {"page_number": 1, "width": 100},
+            {"page_number": 3, "width": 120},
+        ],
+        "usage": {"billable_pages": 3},
+    }
+    gateway = RecordingGateway([raw])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    summary = await _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    ).parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
+
+    assert summary.failed_documents == 0
+    assert checkpoint is not None
+    assert checkpoint.page_mappings == (
+        {
+            "page": 1,
+            "source_page": 1,
+            "element_count": 1,
+            "element_indexes": [0],
+            "provider_page_metadata": {"page_number": 1, "width": 100},
+        },
+        {
+            "page": 2,
+            "source_page": 2,
+            "element_count": 0,
+            "element_indexes": [],
+        },
+        {
+            "page": 3,
+            "source_page": 3,
+            "element_count": 1,
+            "element_indexes": [1],
+            "provider_page_metadata": {"page_number": 3, "width": 120},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_entirely_blank_document_maps_all_manifest_pages_empty(tmp_path: Path) -> None:
+    """Catch rejecting a valid all-blank response with an authoritative billable count."""
+    document = _document(tmp_path, "a", 2)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    raw = {
+        "model": "2026-08-01",
+        "usage": {"billable_pages": 2},
+    }
+    gateway = RecordingGateway([raw])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    summary = await _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    ).parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
+
+    assert summary.failed_documents == 0
+    assert checkpoint is not None
+    assert checkpoint.markdown == ""
+    assert checkpoint.html == ""
+    assert checkpoint.page_mappings == (
+        {"page": 1, "source_page": 1, "element_count": 0, "element_indexes": []},
+        {"page": 2, "source_page": 2, "element_count": 0, "element_indexes": []},
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        (
+            {
+                "model": "2026-08-01",
+                "elements": [{"page": 4, "category": "paragraph", "content": "outside"}],
+                "usage": {"billable_pages": 3},
+            },
+            "outside",
+        ),
+        (
+            {
+                "model": "2026-08-01",
+                "elements": [{"page": 1, "category": "paragraph", "content": "first"}],
+                "usage": {"billable_pages": 2},
+            },
+            "billable page count",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_provider_page_drift_is_reconciliation_required(
+    tmp_path: Path, raw: dict[str, object], error: str
+) -> None:
+    """Catch accepting out-of-range elements or a provider billable-count mismatch."""
+    document = _document(tmp_path, "a", 3)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    gateway = RecordingGateway([raw])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    summary = await _pipeline(
+        snapshot, gateway, repository, authorization=ParseAuthorization(plan.plan_hash)
+    ).parse_corpus("snapshot-1", "standard")
+    checkpoint = await repository.get(
+        "snapshot-1", document.sha256, "standard", "document-parse", "2026-08-01"
+    )
+
+    assert summary.failed_documents == 1
+    assert error in summary.failures[0].error
+    assert checkpoint is not None
+    assert checkpoint.status == "reconciliation_required"
+    assert checkpoint.raw_response == raw
 
 
 @pytest.mark.asyncio

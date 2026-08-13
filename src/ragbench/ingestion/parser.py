@@ -78,15 +78,19 @@ class ParseCheckpoint:
         if self.status != "succeeded" or self.raw_response is None or not self.raw_response_hash:
             return False
         content = _content_fields(self.raw_response)
-        elements = self.raw_response.get("elements")
+        elements = self.raw_response.get("elements", [])
         if not isinstance(elements, list):
+            return False
+        try:
+            mappings = _page_mappings(self.raw_response, self.expected_pages)
+        except ParseIntegrityError:
             return False
         return (
             canonical_json_hash(self.raw_response) == self.raw_response_hash
             and self.markdown == content[0]
             and self.html == content[1]
             and self.elements == tuple(dict(item) for item in elements if isinstance(item, dict))
-            and self.page_mappings == _page_mappings(self.raw_response, self.expected_pages)
+            and self.page_mappings == mappings
         )
 
     @classmethod
@@ -633,12 +637,8 @@ class ParserPipeline:
                             dict(raw) if raw is not None else None,
                             canonical_json_hash(raw) if raw is not None else None,
                             *_content_fields(raw or {}),
-                            tuple(
-                                dict(value)
-                                for value in (raw or {}).get("elements", [])
-                                if isinstance(value, dict)
-                            ),
-                            _page_mappings(raw or {}, document.page_count) if paid else (),
+                            _evidence_elements(raw or {}),
+                            _safe_page_mappings(raw or {}, document.page_count) if paid else (),
                             latency_ms,
                             _money(
                                 self._price_book.estimate(
@@ -719,16 +719,14 @@ class ParserPipeline:
         resolved_version = _provider_version(raw)
         if resolved_version != self._model_version:
             raise ParseIntegrityError("provider model version differs from the approved plan")
-        elements = raw.get("elements")
+        elements = raw.get("elements", [])
         if not isinstance(elements, list) or not all(isinstance(item, dict) for item in elements):
             raise ParseIntegrityError("provider response elements are malformed")
+        has_provider_page_count = _validate_provider_page_count(raw, document.page_count)
         markdown, html = _content_fields(raw)
-        if not markdown and not html and not elements:
-            raise ParseIntegrityError("provider response contains no recognized parse content")
+        if "elements" not in raw and not has_provider_page_count and not markdown and not html:
+            raise ParseIntegrityError("provider response contains no recognized parse evidence")
         mappings = _page_mappings(raw, document.page_count)
-        source_pages = {int(item["source_page"]) for item in mappings}
-        if source_pages != set(range(1, document.page_count + 1)):
-            raise ParseIntegrityError("provider page count or page set does not match the corpus")
         cost = _money(
             self._price_book.estimate(
                 PricingRequest(
@@ -792,6 +790,13 @@ def _provider_version(raw: dict[str, Any] | None) -> str | None:
     return str(value) if isinstance(value, str) and value else None
 
 
+def _evidence_elements(raw: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    elements = raw.get("elements")
+    if not isinstance(elements, list):
+        return ()
+    return tuple(dict(value) for value in elements if isinstance(value, dict))
+
+
 def _content_fields(raw: dict[str, Any]) -> tuple[str, str]:
     content = raw.get("content")
     markdown = raw.get("markdown", "")
@@ -830,32 +835,78 @@ def _content_fields(raw: dict[str, Any]) -> tuple[str, str]:
 
 
 def _page_mappings(raw: dict[str, Any], expected_pages: int) -> tuple[dict[str, Any], ...]:
+    metadata_by_page: dict[int, dict[str, Any]] = {}
     candidates = raw.get("pages")
-    mappings: list[dict[str, Any]] = []
+    if candidates is not None and not isinstance(candidates, list):
+        raise ParseIntegrityError("provider page metadata is malformed")
     if isinstance(candidates, list):
         for item in candidates:
             if not isinstance(item, dict):
-                continue
+                raise ParseIntegrityError("provider page metadata is malformed")
             page = item.get("source_page", item.get("page_number", item.get("page")))
-            if isinstance(page, int) and page > 0:
-                mappings.append({"page": page, "source_page": page})
+            if not isinstance(page, int):
+                raise ParseIntegrityError("provider page metadata lacks a page number")
+            if page not in range(1, expected_pages + 1):
+                raise ParseIntegrityError("provider page metadata is outside the manifest page set")
+            metadata_by_page[page] = dict(item)
     elements = raw.get("elements")
-    if not mappings and isinstance(elements, list):
-        for item in elements:
+    element_indexes: dict[int, list[int]] = {page: [] for page in range(1, expected_pages + 1)}
+    if isinstance(elements, list):
+        for index, item in enumerate(elements):
             if not isinstance(item, dict):
-                continue
+                raise ParseIntegrityError("provider response elements are malformed")
             page = item.get("page", item.get("page_number"))
-            if isinstance(page, int) and page > 0:
-                mappings.append({"page": page, "source_page": page})
-    if not mappings and not elements:
-        usage = raw.get("usage")
-        count = usage.get("pages") if isinstance(usage, dict) else raw.get("page_count")
-        if count == expected_pages:
-            mappings = [
-                {"page": page, "source_page": page} for page in range(1, expected_pages + 1)
-            ]
-    unique = {item["source_page"]: item for item in mappings}
-    return tuple(unique[key] for key in sorted(unique))
+            if not isinstance(page, int):
+                raise ParseIntegrityError("provider element lacks a page number")
+            if page not in element_indexes:
+                raise ParseIntegrityError("provider element page is outside the manifest page set")
+            element_indexes[page].append(index)
+    mappings: list[dict[str, Any]] = []
+    for page in range(1, expected_pages + 1):
+        mapping: dict[str, Any] = {
+            "page": page,
+            "source_page": page,
+            "element_count": len(element_indexes[page]),
+            "element_indexes": element_indexes[page],
+        }
+        if page in metadata_by_page:
+            mapping["provider_page_metadata"] = metadata_by_page[page]
+        mappings.append(mapping)
+    return tuple(mappings)
+
+
+def _safe_page_mappings(raw: dict[str, Any], expected_pages: int) -> tuple[dict[str, Any], ...]:
+    try:
+        return _page_mappings(raw, expected_pages)
+    except ParseIntegrityError:
+        return tuple(
+            {
+                "page": page,
+                "source_page": page,
+                "element_count": 0,
+                "element_indexes": [],
+            }
+            for page in range(1, expected_pages + 1)
+        )
+
+
+def _validate_provider_page_count(raw: dict[str, Any], expected_pages: int) -> bool:
+    observed: list[Any] = []
+    usage = raw.get("usage")
+    if usage is not None:
+        if not isinstance(usage, dict):
+            raise ParseIntegrityError("provider usage is malformed")
+        for key in ("billable_pages", "pages", "page_count"):
+            if key in usage:
+                observed.append(usage[key])
+    for key in ("billable_pages", "page_count"):
+        if key in raw:
+            observed.append(raw[key])
+    if any(not isinstance(value, int) for value in observed):
+        raise ParseIntegrityError("provider billable page count is malformed")
+    if any(value != expected_pages for value in observed):
+        raise ParseIntegrityError("provider billable page count does not match the corpus")
+    return bool(observed)
 
 
 def _read_verified_source(document: DocumentRecord) -> bytes:

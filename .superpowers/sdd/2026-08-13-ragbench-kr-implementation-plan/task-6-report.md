@@ -92,3 +92,22 @@ pytest -m 'not live and not gold' -q
 The three skips are the live provider smoke and two PostgreSQL integration cases because no test
 database URL was configured. The complete Alembic upgrade was also generated successfully through
 the offline PostgreSQL SQL path. No skipped result is represented as executed evidence.
+
+## Fix round 2 — sparse and blank page reconciliation
+
+- Made the verified manifest/request page count authoritative. A successful checkpoint now has one
+  mapping record for every expected page, including explicit `element_count: 0` and empty element
+  indexes for blank pages; it never invents text or structural elements for those pages.
+- Groups element indexes by their documented page/page-number field and rejects any element or
+  provider page metadata outside the expected range. Provider page metadata is retained alongside
+  its corresponding complete mapping record.
+- Validates any returned `usage.pages`, `usage.billable_pages`, usage page count, or top-level
+  billable/page count against the expected count. When elements are absent, an authoritative
+  matching count (or an explicit empty element list) supports a consistently all-blank document.
+- Paid page/schema drift continues to preserve raw response evidence and a
+  `reconciliation_required` checkpoint.
+
+No live calls or real corpus operations were performed in this round.
+
+Fix-round verification: focused parser/resume tests `20 passed`; full offline suite `131 passed,
+3 skipped`; Ruff and strict mypy both clean. The skip reasons are unchanged from fix round 1.
