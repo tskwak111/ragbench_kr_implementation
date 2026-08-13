@@ -245,12 +245,12 @@ class ExperimentRunner:
 
 **Interfaces:** Produces CLI commands `preflight`, `smoke solar`, `smoke parse`, `smoke embed`, and `usage status`.
 
-- [ ] **Step 1: Write CLI tests** using a fake gateway. Confirm offline preflight checks Docker, DB migration, writable cache path, price freshness, budget remaining, and secret presence without printing the secret.
-- [ ] **Step 2: Implement commands** with Typer and machine-readable `--json` output.
-- [ ] **Step 3: Add live tests** guarded by both the environment flag and pytest marker. Use one short Korean prompt, one 1-page fixture PDF, and one short embedding input; cap output and projected spend.
+- [x] **Step 1: Write CLI tests** using a fake gateway. Confirm offline preflight checks Docker, DB migration, writable cache path, price freshness, budget remaining, and secret presence without printing the secret.
+- [x] **Step 2: Implement commands** with Typer and machine-readable `--json` output.
+- [x] **Step 3: Add live tests** guarded by both the environment flag and pytest marker. Use one short Korean prompt, one 1-page fixture PDF, and one short embedding input; cap output and projected spend.
 - [ ] **Step 4: Run offline tests.** Then, only with operator approval and credentials, run each live smoke exactly once and record timestamp/model/latency/usage IDs.
 - [ ] **Step 5: Verify raw responses are cached** and rerunning smoke with identical input causes no paid request.
-- [ ] **Step 6: Commit** `feat: add provider smoke and preflight commands`.
+- [x] **Step 6: Commit** `feat: add provider smoke and preflight commands`.
 
 ### Task 5: Corpus Manifest, Provenance, and Freeze Gate
 
@@ -594,7 +594,7 @@ Codex must append one row after every completed task; do not mark a task complet
 | 1 | `f7b562c`, `144ce70`, `603aeab` | Ruff, strict mypy, 4 non-live/non-gold tests, secret-guard matrix, `git diff --check` | pass | 0 | n/a | `PriceBook.from_yaml` deferred to Task 3 by operator decision. |
 | 2 | `0713f1c`, `4309cb4` | Ruff, strict mypy, 8 passed/1 DB skip, offline Alembic SQL | partial | 0 | n/a | Code review approved; live PostgreSQL upgrade/downgrade/upgrade pending because Docker/PostgreSQL is unavailable locally. |
 | 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
-| 4 | — | — | pending | 0 | pending | — |
+| 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
 | 5 | — | — | pending | 0 | n/a | — |
 | 6 | — | — | pending | 0 | pending | — |
 | 7 | — | — | pending | 0 | n/a | — |
