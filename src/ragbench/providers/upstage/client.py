@@ -19,6 +19,7 @@ import httpx
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool
 
 from ragbench.core.hashing import canonical_json_hash
 from ragbench.core.money import BudgetGuard, Reservation, Usage
@@ -139,8 +140,24 @@ class MemoryProviderStore:
 class SqlAlchemyProviderStore:
     """PostgreSQL raw response cache shared by concurrent gateway processes."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        lock_session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        if lock_session_factory is session_factory:
+            raise ValueError("lock_session_factory must be distinct from session_factory")
+        operational_bind = session_factory.kw.get("bind")
+        lock_bind = lock_session_factory.kw.get("bind")
+        if lock_bind is operational_bind:
+            raise ValueError("lock_session_factory must use a distinct engine")
+        lock_sync_engine = getattr(lock_bind, "sync_engine", None)
+        lock_pool = getattr(lock_sync_engine, "pool", None)
+        if not isinstance(lock_pool, NullPool):
+            raise ValueError("lock_session_factory must be backed by NullPool")
         self._session_factory = session_factory
+        self._lock_session_factory = lock_session_factory
 
     async def get(self, cache_key: str) -> CachedResponse | None:
         async with self._session_factory() as session:
@@ -185,14 +202,11 @@ class SqlAlchemyProviderStore:
     @asynccontextmanager
     async def singleflight(self, cache_key: str) -> AsyncIterator[None]:
         lock_id = _cache_lock_id(cache_key)
-        async with self._session_factory() as session:
-            await session.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
-            try:
-                yield
-            finally:
-                await session.execute(
-                    text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id}
-                )
+        async with self._lock_session_factory() as session, session.begin():
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id}
+            )
+            yield
 
 
 Sleep = Callable[[float], Awaitable[None]]
