@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups
+      - name: Guard against tracked Upstage API keys
+        run: |
+          pattern='UPSTAGE_API_KEY'
+          if git grep -nE "${pattern}=([[:alnum:]_-][^[:space:]#]*|\"[^\"]+\"|'[^']+')"; then
+            echo "Refusing to run with a tracked nonempty UPSTAGE_API_KEY."
+            exit 1
+          fi
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Mypy
+        run: uv run mypy src/ragbench
+      - name: Tests without live or gold access
+        run: uv run pytest -m 'not live and not gold' -q
