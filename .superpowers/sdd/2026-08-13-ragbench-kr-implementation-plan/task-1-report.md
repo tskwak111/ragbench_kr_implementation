@@ -71,3 +71,38 @@ development dependencies only.
 ## Commit
 
 - `chore: bootstrap typed ragbench project`
+
+## Fix Round 1: CI secret guard whitespace bypass
+
+### Root cause and implementation
+
+The original value expression required the first character after `=` to be
+alphanumeric, `_`, or `-`. Therefore, `UPSTAGE_API_KEY= secret` did not match.
+The guard now anchors to a dotenv assignment line, permits whitespace around the
+key and `=`, and fails when the first non-whitespace value character is not `#`.
+Empty and comment-only assignments remain allowed.
+
+### Covering executable behavior check
+
+RED command:
+
+```sh
+pattern="UPSTAGE_API_KEY=([[:alnum:]_-][^[:space:]#]*|\"[^\"]+\"|'[^']+')"; if printf '%s\n' 'UPSTAGE_API_KEY= secret' | grep -qE "$pattern"; then echo 'unexpected current guard match'; exit 1; else echo 'RED reproduced: current guard misses whitespace-prefixed nonempty value'; exit 1; fi
+```
+
+Output and exit: `RED reproduced: current guard misses whitespace-prefixed nonempty value` (exit 1).
+
+GREEN command:
+
+```sh
+pattern='^[[:space:]]*UPSTAGE_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]'; printf '%s\n' 'UPSTAGE_API_KEY= secret' '  UPSTAGE_API_KEY = "secret"' | grep -qE "$pattern" && ! printf '%s\n' 'UPSTAGE_API_KEY=' ' UPSTAGE_API_KEY =    ' 'UPSTAGE_API_KEY= # intentionally unset' | grep -qE "$pattern" && ! git grep -nE "$pattern" && echo 'secret guard behavior: whitespace-prefixed values rejected; empty/comment-only assignments allowed'
+```
+
+Output and exit: `secret guard behavior: whitespace-prefixed values rejected; empty/comment-only assignments allowed` (exit 0).
+
+### Relevant global checks
+
+- `.venv/bin/ruff check .`
+- `.venv/bin/mypy src/ragbench`
+- `.venv/bin/pytest -m 'not live and not gold' -q`
+- `git diff --check`
