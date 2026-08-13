@@ -230,14 +230,14 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `canonical_json_hash(value) -> str`, `PriceBook.estimate(request) -> Decimal`, `BudgetGuard.reserve(...)`, `BudgetGuard.settle(...)`, and `UpstageGateway` implementing `ProviderGateway`.
 
-- [ ] **Step 1: Write failing tests** for stable hashes across dictionary key order, price calculations for parse/chat/embed, rejection at the hard limit, release of failed reservations, cache hit without HTTP traffic, 429 retry with bounded exponential backoff, and no retry for 400/401.
-- [ ] **Step 2: Run focused tests** and confirm failures.
-- [ ] **Step 3: Implement canonical cache keys** from operation, exact model ID, provider parameters, prompt/context hashes, document SHA-256, and schema version. Never include the plaintext API key.
-- [ ] **Step 4: Implement atomic budget reservation** inside a database transaction: sum settled usage plus open reservations, compare projected cost with hard cap, insert reservation, then settle actual/estimated usage after response. A request without calculable upper bound must provide `max_output_tokens`.
-- [ ] **Step 5: Implement `httpx.AsyncClient` adapter** with explicit connect/read/write/pool timeouts, semaphore concurrency, `Retry-After` support, jittered backoff for 429/5xx/network errors, request correlation IDs, raw response cache, and redacted logs.
-- [ ] **Step 6: Add price preflight.** `ragbench prices verify` prints the loaded price snapshot and refuses paid batches when `verified_at` is older than 24 hours or promotion status is ambiguous.
-- [ ] **Step 7: Verify contract tests** with `respx`; assert the second identical call produces zero HTTP requests and one cache-hit usage record.
-- [ ] **Step 8: Commit** `feat: guard and cache all provider usage`.
+- [x] **Step 1: Write failing tests** for stable hashes across dictionary key order, price calculations for parse/chat/embed, rejection at the hard limit, release of failed reservations, cache hit without HTTP traffic, 429 retry with bounded exponential backoff, and no retry for 400/401.
+- [x] **Step 2: Run focused tests** and confirm failures.
+- [x] **Step 3: Implement canonical cache keys** from operation, exact model ID, provider parameters, prompt/context hashes, document SHA-256, and schema version. Never include the plaintext API key.
+- [x] **Step 4: Implement atomic budget reservation** inside a database transaction: sum settled usage plus open reservations, compare projected cost with hard cap, insert reservation, then settle actual/estimated usage after response. A request without calculable upper bound must provide `max_output_tokens`.
+- [x] **Step 5: Implement `httpx.AsyncClient` adapter** with explicit connect/read/write/pool timeouts, semaphore concurrency, `Retry-After` support, jittered backoff for 429/5xx/network errors, request correlation IDs, raw response cache, and redacted logs.
+- [x] **Step 6: Add price preflight.** `ragbench prices verify` prints the loaded price snapshot and refuses paid batches when `verified_at` is older than 24 hours or promotion status is ambiguous.
+- [x] **Step 7: Verify contract tests** with `respx`; assert the second identical call produces zero HTTP requests and one cache-hit usage record.
+- [x] **Step 8: Commit** `feat: guard and cache all provider usage`.
 
 ### Task 4: API Smoke Tests and Operational Preflight
 
@@ -593,7 +593,7 @@ Codex must append one row after every completed task; do not mark a task complet
 |---:|---|---|---|---:|---|---|
 | 1 | `f7b562c`, `144ce70`, `603aeab` | Ruff, strict mypy, 4 non-live/non-gold tests, secret-guard matrix, `git diff --check` | pass | 0 | n/a | `PriceBook.from_yaml` deferred to Task 3 by operator decision. |
 | 2 | `0713f1c`, `4309cb4` | Ruff, strict mypy, 8 passed/1 DB skip, offline Alembic SQL | partial | 0 | n/a | Code review approved; live PostgreSQL upgrade/downgrade/upgrade pending because Docker/PostgreSQL is unavailable locally. |
-| 3 | — | — | pending | 0 | n/a | — |
+| 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
 | 4 | — | — | pending | 0 | pending | — |
 | 5 | — | — | pending | 0 | n/a | — |
 | 6 | — | — | pending | 0 | pending | — |
