@@ -67,6 +67,22 @@ def test_embed_2_promotion_is_free_only_through_configured_deadline(
     ) == Decimal("0.000000")
 
 
+def test_document_and_query_embedding_ids_share_explicit_pricing(price_book: PriceBook) -> None:
+    """Catch the default document model lacking a live price entry."""
+    request = dict(
+        operation="embed",
+        input_tokens=1_000_000,
+        requested_at=datetime(2026, 8, 24, tzinfo=UTC),
+    )
+
+    assert price_book.estimate(PricingRequest(model_id="embedding-passage", **request)) == Decimal(
+        "0.020000"
+    )
+    assert price_book.estimate(PricingRequest(model_id="embedding-query", **request)) == Decimal(
+        "0.020000"
+    )
+
+
 def test_price_preflight_rejects_stale_paid_snapshot(price_book: PriceBook) -> None:
     """Catch approving paid work from a price snapshot older than 24 hours."""
     now = price_book.verified_at + timedelta(hours=24, microseconds=1)

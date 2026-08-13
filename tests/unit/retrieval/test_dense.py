@@ -34,7 +34,9 @@ async def test_dense_retriever_embeds_as_query_and_passes_all_exact_filters() ->
     embeddings = FakeEmbeddingService()
     repository = FakeSearchRepository()
     retriever = DenseRetriever(embeddings, repository, token_counter=lambda _: 7)
-    search_filter = SearchFilter("corpus-a", "parse-a", "fixed-300", "snapshot-a")
+    search_filter = SearchFilter(
+        "corpus-a", "parse-a", "fixed-300", "snapshot-a", ("doc-b", "doc-a")
+    )
 
     hits = await retriever.search("질문", top_k=2, filter=search_filter)
 
@@ -58,3 +60,12 @@ async def test_dense_retriever_rejects_invalid_top_k_before_embedding() -> None:
         )
 
     assert embeddings.calls == []
+
+
+def test_search_filter_normalizes_document_ids_and_defines_empty_as_no_restriction() -> None:
+    """Catch nondeterministic document predicates or treating empty as match-nothing."""
+    filtered = SearchFilter("c", "p", "s", "e", ("doc-b", "doc-a", "doc-b"))
+    unrestricted = SearchFilter("c", "p", "s", "e", ())
+
+    assert filtered.document_ids == ("doc-a", "doc-b")
+    assert unrestricted.document_ids == ()

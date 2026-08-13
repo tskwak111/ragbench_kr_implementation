@@ -213,3 +213,84 @@ was available locally. Therefore:
   explicit paid confirmation even when a historical promotion date suggests a zero rate.
 
 Implementation commit: `54e0a65 feat: add versioned dense retrieval index`.
+
+## Fix round 1 — 4096D indexing, immutable chunk evidence, and self-contained parity
+
+### Changes
+
+- Replaced the late 4000-dimension rejection with an explicit storage/index plan validated by
+  `build_plan` before gateway construction. Dimensions 1–2000 use full-vector HNSW. Dimensions
+  2001–16000, including the configured 4096D path, index
+  `subvector(embedding, 1, 2000)::vector(2000)`, over-fetch at least
+  `max(20, candidate_factor * top_k)`, and rerank candidates with full-vector cosine distance.
+  Snapshots persist the strategy and candidate factor.
+- Made the partial-index snapshot UUID a parsed/generated literal in search SQL, matching the HNSW
+  predicate exactly. Query vectors and document IDs remain bound parameters, and the indexed
+  `ORDER BY` expression is byte-for-byte the expression used by the index.
+- Added immutable `chunk_artifact` evidence keyed by `(embedding_snapshot_id, chunk_id)`, carrying
+  document ID, verified content SHA-256, token count, and immutable source metadata. The manifest
+  hash is part of snapshot identity, artifacts are registered before API calls, and vectors have a
+  composite foreign key to their artifact.
+- Hardened resume/idempotency: duplicate vectors are read and compared at pgvector's float32
+  representation; different values fail rather than being hidden by `ON CONFLICT DO NOTHING`.
+  Finalization compares the exact artifact/vector ID sets and checks the expected count. Database
+  constraints enforce dimensions and finite, non-zero norms.
+- Added per-snapshot PostgreSQL advisory transaction locks before create/register, persist, and
+  finalize work, in addition to row locks once the snapshot exists. Concurrent duplicate builders
+  therefore serialize before observing or changing snapshot state.
+- Added optional canonical `document_ids` to `SearchFilter`; an empty tuple means no document
+  restriction. Artifacts persist document identity and SQL applies the exact candidate filter.
+- Added an exact `embedding-passage` price entry parallel to `embedding-query`, preventing the
+  default document model from failing only after live execution starts.
+- Migrated `retrieval_result.chunk_id` from UUID/FK-to-`chunk` to `VARCHAR(512)`, added a nullable
+  legacy-compatible `embedding_snapshot_id`, and linked the pair to `chunk_artifact`. Downgrade
+  fails explicitly if new non-UUID artifact IDs cannot be represented in the old schema.
+- Replaced external parity fixture variables with a configured-DB self-contained integration test.
+  It migrates a clean schema, seeds 20 normalized 2001D artifacts/vectors, exercises concurrent
+  registration/persistence/finalization, runs 50 deterministic queries including ties, checks
+  NumPy/pgvector ordered-ID parity at `1e-5`, checks document filtering, and uses `EXPLAIN` with
+  sequential scans disabled to assert the generated HNSW index name is selected.
+- Updated the notebook to explain the wide-vector subvector candidate stage and full reranking.
+
+### TDD and verification evidence
+
+The first focused run was RED at collection because the new manifest/index planning contracts did
+not exist:
+
+```text
+ImportError: cannot import name 'chunk_manifest_hash' from
+'ragbench.embeddings.repository'
+```
+
+After implementing the focused contracts:
+
+```text
+uv --cache-dir /private/tmp/finproof-uv-cache run pytest \
+  tests/unit/embeddings/test_repository.py \
+  tests/unit/embeddings/test_service.py \
+  tests/unit/retrieval/test_dense.py \
+  tests/unit/test_build_embeddings.py \
+  tests/unit/providers/test_budget.py -q
+
+.......................................                                  [100%]
+39 passed in 0.18s
+```
+
+An intermediate full verification after the schema/repository integration reported:
+
+```text
+205 passed, 4 skipped in 1.11s
+All checks passed!  # Ruff
+Success: no issues found in 32 source files  # strict mypy
+```
+
+Alembic offline SQL generation covered the complete upgrade chain through revision
+`20260814_0004` and the `20260814_0004:20260814_0003` downgrade. The final fresh verification and
+commit are recorded in the task handoff.
+
+### Remaining external limitation
+
+No local PostgreSQL URL was available. The self-contained 50-query parity and `EXPLAIN` test is
+implemented for CI but remained skipped locally solely on missing `RAGBENCH_TEST_DATABASE_URL`.
+Accordingly, this round does not claim that a live database selected the index or passed parity.
+No embedding API request was made.

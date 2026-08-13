@@ -12,6 +12,10 @@ class SearchFilter:
     parse_snapshot_id: str
     chunk_strategy: str
     embedding_snapshot_id: str
+    document_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "document_ids", tuple(sorted(set(self.document_ids))))
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,3 +23,9 @@ models:
       promotion:
         input_usd_per_million: "0.00"
         ends_at_exclusive: "2026-08-24T00:00:00Z"
+  embedding-passage:
+    embedding:
+      input_usd_per_million: "0.02"
+      promotion:
+        input_usd_per_million: "0.00"
+        ends_at_exclusive: "2026-08-24T00:00:00Z"

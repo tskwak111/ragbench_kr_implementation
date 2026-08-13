@@ -21,6 +21,9 @@ from ragbench.embeddings.repository import (
     ChunkEmbeddingInput,
     EmbeddingSnapshot,
     SqlAlchemyEmbeddingRepository,
+    chunk_manifest_hash,
+    embedding_index_plan,
+    frozen_source_metadata,
 )
 from ragbench.embeddings.service import EmbeddingService
 from ragbench.providers.upstage.client import SqlAlchemyProviderStore, UpstageGateway
@@ -68,10 +71,31 @@ def build_plan(
         raise BuildGateError("embedding input must use exactly one parse snapshot")
     if len(strategies) != 1 or "" in strategies:
         raise BuildGateError("embedding input must use exactly one chunk strategy")
+    index_plan = embedding_index_plan(dimension)
+    if any(not item.get("document_id") for item in rows):
+        raise BuildGateError("every chunk row requires document_id")
     try:
         chunks = tuple(
             ChunkEmbeddingInput(
-                str(item["chunk_id"]), str(item["content"]), int(item["token_count"])
+                str(item["chunk_id"]),
+                str(item["document_id"]),
+                str(item["content"]),
+                int(item["token_count"]),
+                source_metadata=frozen_source_metadata(
+                    {
+                        key: item[key]
+                        for key in (
+                            "page_start",
+                            "page_end",
+                            "section_path",
+                            "source_block_ids",
+                            "strategy_hash",
+                            "token_start",
+                            "token_end",
+                        )
+                        if key in item
+                    }
+                ),
             )
             for item in rows
         )
@@ -90,6 +114,9 @@ def build_plan(
         "query_model_id": query_model_id,
         "dimension": dimension,
         "normalization": "l2",
+        "artifact_manifest_hash": chunk_manifest_hash(chunks),
+        "index_strategy": index_plan.strategy,
+        "candidate_factor": index_plan.candidate_factor,
     }
     plan_hash = canonical_json_hash(identity)
     created_at = datetime.fromtimestamp(dataset.stat().st_mtime, tz=UTC)
@@ -103,6 +130,9 @@ def build_plan(
         dimension=dimension,
         normalization="l2",
         expected_chunk_count=len(chunks),
+        artifact_manifest_hash=chunk_manifest_hash(chunks),
+        index_strategy=index_plan.strategy,
+        candidate_factor=index_plan.candidate_factor,
         created_at=created_at,
     )
     return EmbeddingBuildPlan(

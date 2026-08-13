@@ -40,7 +40,7 @@ class EmbeddingService:
         chunk_ids = [chunk.chunk_id for chunk in chunks]
         if len(chunk_ids) != len(set(chunk_ids)):
             raise ValueError("embedding snapshot chunks must have unique IDs")
-        stored = await self._repository.create_snapshot(snapshot)
+        stored = await self._repository.create_snapshot(snapshot, chunks)
         if stored.complete:
             return stored
         completed = await self._repository.completed_chunk_ids(snapshot.snapshot_id)

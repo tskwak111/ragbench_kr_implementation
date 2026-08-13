@@ -105,6 +105,9 @@ class EmbeddingSnapshot(Base):
     dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     normalization: Mapped[str] = mapped_column(String(32), nullable=False)
     expected_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    index_strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_factor: Mapped[int] = mapped_column(Integer, nullable=False)
     complete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     index_name: Mapped[str | None] = mapped_column(String(128))
     index_state: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
@@ -113,6 +116,7 @@ class EmbeddingSnapshot(Base):
     __table_args__ = (
         CheckConstraint("dimension > 0", name="embedding_dimension_positive"),
         CheckConstraint("expected_chunk_count >= 0", name="embedding_expected_count_nonnegative"),
+        CheckConstraint("candidate_factor > 0", name="embedding_candidate_factor_positive"),
         UniqueConstraint("id", "dimension", name="uq_embedding_snapshot_id_dimension"),
     )
 
@@ -148,6 +152,25 @@ class Chunk(Base):
     )
 
 
+class ChunkArtifact(Base):
+    """Immutable chunk identity and source evidence scoped to an embedding snapshot."""
+
+    __tablename__ = "chunk_artifact"
+
+    embedding_snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("embedding_snapshot.id", ondelete="RESTRICT"), primary_key=True
+    )
+    chunk_id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[CreatedAt]
+    __table_args__ = (
+        CheckConstraint("token_count > 0", name="chunk_artifact_token_count_positive"),
+    )
+
+
 class ChunkEmbedding(Base):
     """One immutable vector for a chunk within a versioned embedding snapshot."""
 
@@ -165,7 +188,17 @@ class ChunkEmbedding(Base):
             ["embedding_snapshot.id", "embedding_snapshot.dimension"],
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["embedding_snapshot_id", "chunk_id"],
+            ["chunk_artifact.embedding_snapshot_id", "chunk_artifact.chunk_id"],
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("vector_dims(embedding) = dimension", name="chunk_embedding_dimension"),
+        CheckConstraint(
+            "vector_norm(embedding) > 0 AND "
+            "vector_norm(embedding) < 'Infinity'::float8",
+            name="chunk_embedding_finite_nonzero",
+        ),
         UniqueConstraint(
             "embedding_snapshot_id", "chunk_id", name="uq_chunk_embedding_snapshot_chunk"
         ),
@@ -237,14 +270,20 @@ class RetrievalResult(Base):
     experiment_response_id: Mapped[UUID] = mapped_column(
         ForeignKey("experiment_response.id", ondelete="RESTRICT"), nullable=False
     )
-    chunk_id: Mapped[UUID] = mapped_column(
-        ForeignKey("chunk.id", ondelete="RESTRICT"), nullable=False
-    )
+    embedding_snapshot_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    chunk_id: Mapped[str] = mapped_column(String(512), nullable=False)
     retriever: Mapped[str] = mapped_column(String(64), nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     score: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
     created_at: Mapped[CreatedAt]
-    __table_args__ = (CheckConstraint("rank > 0", name="retrieval_rank_positive"),)
+    __table_args__ = (
+        CheckConstraint("rank > 0", name="retrieval_rank_positive"),
+        ForeignKeyConstraint(
+            ["embedding_snapshot_id", "chunk_id"],
+            ["chunk_artifact.embedding_snapshot_id", "chunk_artifact.chunk_id"],
+            ondelete="RESTRICT",
+        ),
+    )
 
 
 class Metric(Base):
