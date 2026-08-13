@@ -8,6 +8,7 @@ This collector requires POSIX ``O_NOFOLLOW``, directory file descriptors, and
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import os
 import re
@@ -22,6 +23,8 @@ import yaml
 from pypdf import PdfReader
 
 from ragbench.ingestion.manifest import DocumentRecord
+
+_LINK_SUPPORTS_DIR_FD = os.link in os.supports_dir_fd
 
 
 def _parse_args() -> argparse.Namespace:
@@ -58,8 +61,10 @@ def _parse_args() -> argparse.Namespace:
 
 def _require_safe_posix() -> None:
     required_os = ("O_NOFOLLOW", "O_DIRECTORY")
-    if any(not hasattr(os, name) for name in required_os) or os.link not in os.supports_dir_fd:
+    if any(not hasattr(os, name) for name in required_os) or not _LINK_SUPPORTS_DIR_FD:
         raise RuntimeError("safe POSIX no-follow directory-descriptor primitives are unavailable")
+    if not hasattr(fcntl, "flock"):
+        raise RuntimeError("safe advisory collector locking is unavailable")
 
 
 @contextmanager
@@ -191,6 +196,20 @@ def _cleanup_staged(directory_fd: int, staged: _StagedFile) -> None:
         os.unlink(staged.name, dir_fd=directory_fd)
 
 
+@contextmanager
+def _collector_lock(private_fd: int) -> Iterator[None]:
+    """Serialize cooperating collectors inside the trusted private output directory."""
+    descriptor = os.open(
+        ".collector.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=private_fd
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def _preflight_absent(directory_fd: int, names: tuple[str, ...]) -> None:
     """Reject already-present link targets before publishing any transaction member."""
     for name in names:
@@ -202,7 +221,7 @@ def _preflight_absent(directory_fd: int, names: tuple[str, ...]) -> None:
 
 
 def _publish_staged(directory_fd: int, staged: _StagedFile, destination_name: str) -> None:
-    """Publish one staged inode with atomic no-replace link semantics."""
+    """Link no-replace; accept only a byte-identical prior artifact under the collector lock."""
     try:
         os.link(
             staged.name,
@@ -212,24 +231,18 @@ def _publish_staged(directory_fd: int, staged: _StagedFile, destination_name: st
             follow_symlinks=False,
         )
     except FileExistsError as error:
-        raise FileExistsError(
-            f"refusing to overwrite existing destination: {destination_name}"
-        ) from error
-
-
-def _rollback_owned_link(directory_fd: int, destination_name: str, staged: _StagedFile) -> None:
-    """Unlink only a destination still pointing at this invocation's staged inode."""
-    if _destination_is_owned(directory_fd, destination_name, staged):
-        os.unlink(destination_name, dir_fd=directory_fd)
-
-
-def _destination_is_owned(directory_fd: int, destination_name: str, staged: _StagedFile) -> bool:
-    """Return whether a visible name still refers to this run's temporary inode."""
-    try:
-        metadata = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    return metadata.st_dev == staged.device and metadata.st_ino == staged.inode
+        existing_fd = os.open(destination_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        staged_fd = os.open(staged.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            existing = b"".join(iter(lambda: os.read(existing_fd, 1024 * 1024), b""))
+            expected = b"".join(iter(lambda: os.read(staged_fd, 1024 * 1024), b""))
+        finally:
+            os.close(existing_fd)
+            os.close(staged_fd)
+        if existing != expected:
+            raise FileExistsError(
+                f"refusing to overwrite conflicting destination: {destination_name}"
+            ) from error
 
 
 def _stage_pdf(source_fd: int, raw_fd: int) -> tuple[_StagedFile, str, int]:
@@ -331,6 +344,7 @@ def main() -> int:
             with (
                 _open_secure_directory(args.raw_dir) as raw_fd,
                 _open_secure_directory(args.private_output_dir) as private_fd,
+                _collector_lock(private_fd),
             ):
                 destination_name = f"{args.document_id}.pdf"
                 pdf_staged, sha256, page_count = _stage_pdf(source_fd, raw_fd)
@@ -355,36 +369,18 @@ def main() -> int:
                 ).encode()
                 fragment_staged: _StagedFile | None = None
                 report_staged: _StagedFile | None = None
-                created: list[tuple[int, str, _StagedFile]] = []
                 try:
                     fragment_staged = _stage_bytes(private_fd, fragment_payload)
                     report_staged = _stage_bytes(private_fd, report_payload)
-                    _preflight_absent(private_fd, (fragment_name, report_name))
-                    _preflight_absent(raw_fd, (destination_name,))
                     # Publish metadata first; the PDF link is the transaction commit marker.
-                    for publish_index, (directory_fd, name, staged) in enumerate(
-                        (
-                            (private_fd, fragment_name, fragment_staged),
-                            (private_fd, report_name, report_staged),
-                            (raw_fd, destination_name, pdf_staged),
-                        )
+                    for directory_fd, name, staged in (
+                        (private_fd, fragment_name, fragment_staged),
+                        (private_fd, report_name, report_staged),
                     ):
-                        # The PDF is the commit marker. Do remaining fallible durability work first.
-                        if publish_index == 2:
-                            os.fsync(private_fd)
-                            os.fsync(raw_fd)
-                        try:
-                            _publish_staged(directory_fd, staged, name)
-                        except Exception:
-                            if _destination_is_owned(directory_fd, name, staged):
-                                created.append((directory_fd, name, staged))
-                            raise
-                        else:
-                            created.append((directory_fd, name, staged))
-                except Exception:
-                    for directory_fd, name, staged in reversed(created):
-                        _rollback_owned_link(directory_fd, name, staged)
-                    raise
+                        _publish_staged(directory_fd, staged, name)
+                    os.fsync(private_fd)
+                    _publish_staged(raw_fd, pdf_staged, destination_name)
+                    os.fsync(raw_fd)
                 finally:
                     _cleanup_staged(raw_fd, pdf_staged)
                     if fragment_staged is not None:

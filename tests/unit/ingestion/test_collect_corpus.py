@@ -200,9 +200,10 @@ def test_preexisting_metadata_output_fails_before_pdf_and_preserves_file(
     assert module.main() == 1
     assert existing.read_text(encoding="utf-8") == "preserve-me"
     assert not (raw / "sample.pdf").exists()
-    assert not (
-        private / ("report.yaml" if existing_name == "fragment.yaml" else "fragment.yaml")
-    ).exists()
+    if existing_name == "fragment.yaml":
+        assert not (private / "report.yaml").exists()
+    else:
+        assert (private / "fragment.yaml").is_file()
 
 
 @pytest.mark.parametrize("failing_link", [1, 2, 3])
@@ -230,8 +231,87 @@ def test_publish_failures_roll_back_only_this_invocations_links(
     monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
 
     assert module.main() == 1
-    assert not (raw / "sample.pdf").exists()
-    assert not (private / "fragment.yaml").exists()
-    assert not (private / "report.yaml").exists()
+    assert (raw / "sample.pdf").exists() is (failing_link == 3)
+    assert (private / "fragment.yaml").exists() is (failing_link >= 1)
+    assert (private / "report.yaml").exists() is (failing_link >= 2)
     assert not list(raw.glob(".collect-*.partial"))
     assert not list(private.glob(".collect-*.partial"))
+
+
+def test_partial_metadata_is_idempotently_reused_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    raw.mkdir()
+    private.mkdir()
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    original_link = module.os.link
+    calls = 0
+
+    def fail_after_report(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        original_link(*args, **kwargs)
+        if calls == 2:
+            raise OSError("stop after report")
+
+    monkeypatch.setattr(module.os, "link", fail_after_report)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+    assert module.main() == 1
+    assert (private / "fragment.yaml").is_file()
+    assert (private / "report.yaml").is_file()
+    monkeypatch.setattr(module.os, "link", original_link)
+    assert module.main() == 0
+    assert (raw / "sample.pdf").is_file()
+
+
+def test_raw_directory_fsync_occurs_after_pdf_commit_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _collector_module()
+    approved, raw, private = tmp_path / "approved", tmp_path / "raw", tmp_path / "private"
+    approved.mkdir()
+    raw.mkdir()
+    private.mkdir()
+    source = approved / "sample.pdf"
+    _write_pdf(source)
+    raw_fd = os.open(raw, os.O_RDONLY)
+    os.close(raw_fd)
+    events: list[str] = []
+    original_link, original_fsync = module.os.link, module.os.fsync
+
+    def record_link(source_name: str, destination_name: str, **kwargs: object) -> None:
+        original_link(source_name, destination_name, **kwargs)
+        if destination_name == "sample.pdf":
+            events.append("pdf-link")
+
+    def record_fsync(descriptor: int) -> None:
+        original_fsync(descriptor)
+        events.append("fsync")
+
+    monkeypatch.setattr(module.os, "link", record_link)
+    monkeypatch.setattr(module.os, "fsync", record_fsync)
+    monkeypatch.setattr(sys, "argv", _arguments(approved, source, raw, private))
+    assert module.main() == 0
+    assert events.index("pdf-link") < len(events) - 1
+
+
+def test_temp_cleanup_leaves_replaced_name_untouched(tmp_path: Path) -> None:
+    module = _collector_module()
+    directory = tmp_path / "private"
+    directory.mkdir()
+    with module._open_secure_directory(directory) as directory_fd:
+        staged = module._stage_bytes(directory_fd, b"owned")
+        os.unlink(staged.name, dir_fd=directory_fd)
+        replacement_fd = os.open(
+            staged.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory_fd
+        )
+        try:
+            os.write(replacement_fd, b"replacement")
+        finally:
+            os.close(replacement_fd)
+        module._cleanup_staged(directory_fd, staged)
+    assert (directory / staged.name).read_bytes() == b"replacement"

@@ -80,3 +80,11 @@ Success: no issues found in 20 source files
 .venv/bin/pytest -m 'not live and not gold' -q
 100 passed, 2 skipped
 ```
+
+## Fix round 3 — idempotent publication without final-path rollback
+
+Removed final-output rollback entirely. The collector now holds an exclusive `fcntl.flock` in the verified private directory from preflight through staging, publication, and directory fsync. Existing final artifact links are accepted only if their bytes exactly match the staged artifact; they represent a safe retry of a prior partial cooperative run. Conflicting bytes fail the collection before later publication. No error path unlinks a final PDF, fragment, or report.
+
+The PDF stays the final commit marker. The private output directory is fsynced before the PDF link; the raw directory is fsynced immediately after that link. Record/model validation occurs before source staging, including the positive page-count model constraint. Staging cleanup is entered immediately after each stage and compares the expected inode first; cleanup relies on the documented trusted private-directory/cooperating-collector boundary rather than claiming protection against a malicious same-UID writer.
+
+Added regressions for idempotent partial metadata retry, raw-directory fsync ordering after the PDF commit marker, and replaced-temp-name preservation. Existing publication failure tests assert that no final unlink rollback occurs.
