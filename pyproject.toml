@@ -16,7 +16,11 @@ dependencies = [
   "pgvector>=0.3,<1",
   "pyyaml>=6,<7",
   "sqlalchemy[asyncio]>=2.0,<3",
+  "typer>=0.15,<1",
 ]
+
+[project.scripts]
+ragbench = "ragbench.cli:main"
 
 [dependency-groups]
 dev = [
