@@ -216,13 +216,13 @@ class ExperimentRunner:
 
 **Interfaces:** Produces async session factory and models `Document`, `ParseRun`, `Chunk`, `Question`, `Experiment`, `ExperimentResponse`, `RetrievalResult`, `Metric`, `ApiUsage`, `ApiCacheEntry`, and `BudgetReservation`.
 
-- [ ] **Step 1: Write an integration test** that migrates an empty PostgreSQL database to head, inserts one document and experiment, enforces unique document SHA-256, and verifies vector extension availability.
+- [x] **Step 1: Write an integration test** that migrates an empty PostgreSQL database to head, inserts one document and experiment, enforces unique document SHA-256, and verifies vector extension availability.
 - [ ] **Step 2: Start test DB** with `docker compose up -d db` and confirm the test fails because tables are absent.
-- [ ] **Step 3: Implement models.** Use UUID primary keys; UTC timestamps; JSONB for immutable configuration snapshots; `Numeric(12,6)` for USD; pgvector column whose dimension comes from a recorded embedding snapshot; foreign keys with restrictive deletes for experiment evidence.
-- [ ] **Step 4: Add indexes** on document hash, `(parse_run_id, strategy, ordinal)`, question split/type, experiment status, usage correlation ID, and vector HNSW after vectors are populated.
-- [ ] **Step 5: Generate and inspect migration.** Ensure downgrade removes only objects created by this migration.
+- [x] **Step 3: Implement models.** Use UUID primary keys; UTC timestamps; JSONB for immutable configuration snapshots; `Numeric(12,6)` for USD; pgvector column whose dimension comes from a recorded embedding snapshot; foreign keys with restrictive deletes for experiment evidence.
+- [x] **Step 4: Add indexes** on document hash, `(parse_run_id, strategy, ordinal)`, question split/type, experiment status, usage correlation ID, and vector HNSW after vectors are populated.
+- [x] **Step 5: Generate and inspect migration.** Ensure downgrade removes only objects created by this migration.
 - [ ] **Step 6: Run** `alembic upgrade head`, integration test, then `alembic downgrade base && alembic upgrade head`.
-- [ ] **Step 7: Commit** `feat: add experiment persistence schema`.
+- [x] **Step 7: Commit** `feat: add experiment persistence schema`.
 
 ### Task 3: Deterministic IDs, Cache, Pricing, Budget Guard, and Retry Policy
 
@@ -592,7 +592,7 @@ Codex must append one row after every completed task; do not mark a task complet
 | Task | Commit | Tests/checks | Result | Paid calls | Cost reconciled | Notes |
 |---:|---|---|---|---:|---|---|
 | 1 | `f7b562c`, `144ce70`, `603aeab` | Ruff, strict mypy, 4 non-live/non-gold tests, secret-guard matrix, `git diff --check` | pass | 0 | n/a | `PriceBook.from_yaml` deferred to Task 3 by operator decision. |
-| 2 | — | — | pending | 0 | n/a | — |
+| 2 | `0713f1c`, `4309cb4` | Ruff, strict mypy, 8 passed/1 DB skip, offline Alembic SQL | partial | 0 | n/a | Code review approved; live PostgreSQL upgrade/downgrade/upgrade pending because Docker/PostgreSQL is unavailable locally. |
 | 3 | — | — | pending | 0 | n/a | — |
 | 4 | — | — | pending | 0 | pending | — |
 | 5 | — | — | pending | 0 | n/a | — |
