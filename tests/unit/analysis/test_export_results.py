@@ -142,6 +142,15 @@ def test_bundle_rejects_cross_cohort_and_unknown_experiment_rows() -> None:
     with pytest.raises(ValueError, match="exact question cohort"):
         AnalysisBundle.model_validate(mismatched)
 
+    wrong_usage_type = _bundle().model_dump(mode="json")
+    wrong_usage_type["usage"][0]["question_type"] = "WRONG_TYPE"
+    with pytest.raises(ValueError, match="usage question type"):
+        AnalysisBundle.model_validate(wrong_usage_type)
+    wrong_failure_type = _bundle().model_dump(mode="json")
+    wrong_failure_type["failures"][0]["question_type"] = "WRONG_TYPE"
+    with pytest.raises(ValueError, match="failure question type"):
+        AnalysisBundle.model_validate(wrong_failure_type)
+
 
 def test_failure_plan_is_deterministic_stratified_and_carries_required_inspection_order() -> None:
     first = plan_failure_sample(_bundle(), sample_size=50, public_salt="public-v1")
@@ -269,6 +278,18 @@ def test_export_writes_core_csv_parquet_svg_and_hash_manifest_without_private_id
     ).read_text()
     assert 'data-measures="quality,gross_cost_usd"' in (
         output / "figures" / "pareto_frontier.svg"
+    ).read_text()
+    assert 'data-geometry="heatmap"' in (
+        output / "figures" / "chunk_heatmap.svg"
+    ).read_text()
+    assert 'data-geometry="scatter"' in (
+        output / "figures" / "pareto_frontier.svg"
+    ).read_text()
+    assert 'data-geometry="dual-axis"' in (
+        output / "figures" / "top_k_tradeoff.svg"
+    ).read_text()
+    assert 'data-geometry="signed-bars"' in (
+        output / "figures" / "parse_paired_difference.svg"
     ).read_text()
     all_csv = "".join(path.read_text() for path in (output / "tables").glob("*.csv"))
     assert "private-question" not in all_csv

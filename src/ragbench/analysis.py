@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import html
 import json
 import math
 import os
-import tempfile
+import secrets
+import stat
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -176,9 +179,15 @@ class AnalysisBundle(_FrozenModel):
                 usage.question_id,
             ) not in result_keys:
                 raise ValueError("usage is outside the exact question cohort")
+            if usage.question_id is not None and usage.question_type != question_types[
+                usage.question_id
+            ]:
+                raise ValueError("usage question type does not match its bound result")
         for failure in self.failures:
             if (failure.experiment_id, failure.question_id) not in result_keys:
                 raise ValueError("failure is not bound to a result in the immutable cohort")
+            if failure.question_type != question_types[failure.question_id]:
+                raise ValueError("failure question type does not match its bound result")
         return self
 
 
@@ -379,61 +388,77 @@ def build_cost_rows(
 
 def export_analysis(request: ExportRequest, output: Path) -> ExportManifest:
     """Generate a deterministic aggregate export and publish its manifest last."""
-    _validate_new_output(output)
-    parent = output.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=parent))
-    try:
-        tables_dir = staging / "tables"
-        figures_dir = staging / "figures"
-        tables_dir.mkdir()
-        figures_dir.mkdir()
-        bundle = _merge_bundles(request.bundles)
-        tables = _build_tables(bundle, request)
-        for name, rows in tables.items():
-            _write_csv(tables_dir / f"{name}.csv", rows)
-            _write_parquet(tables_dir / f"{name}.parquet", rows)
-        figure_names = tuple(
-            name
-            for name in tables
-            if name
-            in {
-                "leaderboard",
-                "parse_paired_difference",
-                "chunk_heatmap",
-                "retriever_by_type",
-                "top_k_tradeoff",
-                "prompt_abstention",
-                "pareto_frontier",
-                "latency_distribution",
-                "failure_taxonomy",
-            }
+    output = Path(os.path.abspath(output))
+    with _secure_parent(output) as parent_fd, _export_lock(parent_fd):
+        _require_absent(parent_fd, output.name)
+        staging_name = f".{output.name}-{secrets.token_hex(16)}.partial"
+        os.mkdir(staging_name, 0o700, dir_fd=parent_fd)
+        staging = output.parent / staging_name
+        staging_fd = os.open(
+            staging_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
         )
-        for name in figure_names:
-            _write_figure(figures_dir / f"{name}.svg", name, tables[name])
-        file_hashes = _hash_files(staging)
-        configs = sorted(bundle.configs, key=lambda row: row.experiment_id)
-        manifest = ExportManifest(
-            cohort_hash=bundle.cohort_hash,
-            data_version=bundle.data_version,
-            code_version=bundle.code_version,
-            experiment_ids=tuple(row.experiment_id for row in configs),
-            config_hashes=tuple(row.config_hash for row in configs),
-            tables=tuple(tables),
-            figures=figure_names,
-            files=file_hashes,
-        )
-        _write_json(staging / "manifest.json", manifest.model_dump(mode="json"))
-        os.rename(staging, output)
-        return manifest
-    finally:
-        if staging.exists():
-            for path in sorted(staging.rglob("*"), reverse=True):
-                if path.is_symlink() or path.is_file():
-                    path.unlink()
-                elif path.is_dir():
-                    path.rmdir()
-            staging.rmdir()
+        staging_identity = os.fstat(staging_fd)
+        try:
+            tables_dir = staging / "tables"
+            figures_dir = staging / "figures"
+            os.mkdir("tables", 0o700, dir_fd=staging_fd)
+            os.mkdir("figures", 0o700, dir_fd=staging_fd)
+            bundle = _merge_bundles(request.bundles)
+            tables = _build_tables(bundle, request)
+            for name, rows in tables.items():
+                _write_csv(tables_dir / f"{name}.csv", rows)
+                _write_parquet(tables_dir / f"{name}.parquet", rows)
+            figure_names = tuple(
+                name
+                for name in tables
+                if name
+                in {
+                    "leaderboard",
+                    "parse_paired_difference",
+                    "chunk_heatmap",
+                    "retriever_by_type",
+                    "top_k_tradeoff",
+                    "prompt_abstention",
+                    "pareto_frontier",
+                    "latency_distribution",
+                    "failure_taxonomy",
+                }
+            )
+            for name in figure_names:
+                _write_figure(figures_dir / f"{name}.svg", name, tables[name])
+            _assert_directory_identity(staging, staging_identity)
+            file_hashes = _hash_files(staging)
+            configs = sorted(bundle.configs, key=lambda row: row.experiment_id)
+            manifest = ExportManifest(
+                cohort_hash=bundle.cohort_hash,
+                data_version=bundle.data_version,
+                code_version=bundle.code_version,
+                experiment_ids=tuple(row.experiment_id for row in configs),
+                config_hashes=tuple(row.config_hash for row in configs),
+                tables=tuple(tables),
+                figures=figure_names,
+                files=file_hashes,
+            )
+            _write_json(staging / "manifest.json", manifest.model_dump(mode="json"))
+            _assert_directory_identity(staging, staging_identity)
+            _require_absent(parent_fd, output.name)
+            os.rename(
+                staging_name,
+                output.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.fsync(parent_fd)
+            return manifest
+        finally:
+            os.close(staging_fd)
+            if staging.exists() and not staging.is_symlink():
+                for path in sorted(staging.rglob("*"), reverse=True):
+                    if path.is_file() and not path.is_symlink():
+                        path.unlink()
+                    elif path.is_dir() and not path.is_symlink():
+                        path.rmdir()
+                staging.rmdir()
 
 
 def _merge_bundles(bundles: Sequence[AnalysisBundle]) -> AnalysisBundle:
@@ -831,7 +856,22 @@ _FIGURE_SPEC: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
 
 def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> None:
     label_fields, measures, axis_label = _FIGURE_SPEC[title]
+    geometry = {
+        "chunk_heatmap": "heatmap",
+        "pareto_frontier": "scatter",
+        "top_k_tradeoff": "dual-axis",
+        "parse_paired_difference": "signed-bars",
+    }.get(title, "grouped-bars")
     selected = rows[:12]
+    if geometry == "heatmap":
+        _write_heatmap(path, title, selected, label_fields, measures[0], axis_label)
+        return
+    if geometry == "scatter":
+        _write_scatter(path, title, selected, measures, axis_label)
+        return
+    if geometry == "dual-axis":
+        _write_dual_axis(path, title, selected, label_fields, measures, axis_label)
+        return
     series: list[tuple[str, str, float]] = []
     for row in selected:
         label = " / ".join(
@@ -842,27 +882,157 @@ def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> 
             if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
                 series.append((label or "all", measure, float(value)))
     absolute_maximum = max((abs(value) for _, _, value in series), default=1.0) or 1.0
+    signed = geometry == "signed-bars"
+    origin = 410 if signed else 210
+    maximum_width = 320 if signed else 430
     bars = []
     colors = ("#355c7d", "#c06c84", "#6c8e68")
     for index, (label, measure, value) in enumerate(series):
         y = 72 + index * 24
-        width = 430 * abs(value) / absolute_maximum
+        width = maximum_width * abs(value) / absolute_maximum
+        x = origin - width if signed and value < 0 else origin
         bars.append(
             f'<text x="10" y="{y + 13}" font-size="10">{html.escape(label)}</text>'
-            f'<rect x="210" y="{y}" width="{width:.2f}" height="16" '
+            f'<rect x="{x:.2f}" y="{y}" width="{width:.2f}" height="16" '
             f'fill="{colors[measures.index(measure) % len(colors)]}"/>'
-            f'<text x="{215 + width:.2f}" y="{y + 12}" font-size="9">'
+            f'<text x="{origin + width + 5:.2f}" y="{y + 12}" font-size="9">'
             f'{html.escape(measure)} {value:.4g}</text>'
         )
-    height = 108 + 24 * len(bars)
+    height = 108 + 24 * (len(bars) + int(signed))
+    if signed:
+        bars.insert(
+            0,
+            f'<line x1="{origin}" y1="67" x2="{origin}" y2="{height}" stroke="#111"/>',
+        )
     payload = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="820" height="{height}" '
-        f'viewBox="0 0 820 {height}" data-measures="{html.escape(",".join(measures))}">'
+        f'viewBox="0 0 820 {height}" data-measures="{html.escape(",".join(measures))}" '
+        f'data-geometry="{geometry}">'
         '<rect width="100%" height="100%" fill="white"/>'
         f'<text x="10" y="28" font-size="20" font-family="sans-serif">{html.escape(title)}</text>'
         f'<text x="10" y="47" font-size="11" fill="#444">{html.escape(axis_label)}</text>'
         '<text x="10" y="62" font-size="9" fill="#666">aggregate public-safe data</text>'
         + "".join(bars)
+        + "</svg>\n"
+    )
+    path.write_text(payload, encoding="utf-8")
+
+
+def _write_heatmap(
+    path: Path,
+    title: str,
+    rows: Sequence[Mapping[str, Any]],
+    label_fields: tuple[str, ...],
+    measure: str,
+    axis_label: str,
+) -> None:
+    x_values = sorted({str(row[label_fields[0]]) for row in rows})
+    y_values = sorted({str(row[label_fields[1]]) for row in rows})
+    values = [float(row[measure]) for row in rows]
+    minimum, maximum = min(values), max(values)
+    cells = []
+    for row in rows:
+        x_index = x_values.index(str(row[label_fields[0]]))
+        y_index = y_values.index(str(row[label_fields[1]]))
+        value = float(row[measure])
+        ratio = 0.5 if maximum == minimum else (value - minimum) / (maximum - minimum)
+        blue = int(245 - 145 * ratio)
+        cells.append(
+            f'<rect x="{180 + x_index * 180}" y="{80 + y_index * 55}" width="170" '
+            f'height="45" fill="rgb({blue},{blue},245)"/>'
+            f'<text x="{188 + x_index * 180}" y="{108 + y_index * 55}" font-size="11">'
+            f'{value:.4g}</text>'
+        )
+    labels = [
+        f'<text x="{188 + index * 180}" y="70" font-size="10">{html.escape(value)}</text>'
+        for index, value in enumerate(x_values)
+    ] + [
+        f'<text x="10" y="{108 + index * 55}" font-size="10">{html.escape(value)}</text>'
+        for index, value in enumerate(y_values)
+    ]
+    _write_svg_document(
+        path,
+        title,
+        measure,
+        "heatmap",
+        axis_label,
+        cells + labels,
+        760,
+        150 + 55 * len(y_values),
+    )
+
+
+def _write_scatter(
+    path: Path,
+    title: str,
+    rows: Sequence[Mapping[str, Any]],
+    measures: tuple[str, ...],
+    axis_label: str,
+) -> None:
+    xs = [float(row[measures[1]]) for row in rows]
+    ys = [float(row[measures[0]]) for row in rows]
+    max_x = max(xs, default=1) or 1
+    min_y, max_y = min(ys, default=0), max(ys, default=1)
+    span_y = max_y - min_y or 1
+    ordered = sorted(zip(xs, ys, strict=True))
+    points = [
+        f'<circle cx="{80 + 620 * x / max_x:.2f}" cy="{340 - 260 * (y - min_y) / span_y:.2f}" '
+        'r="6" fill="#c06c84"/>'
+        for x, y in ordered
+    ]
+    line_points = " ".join(
+        f'{80 + 620 * x / max_x:.2f},{340 - 260 * (y - min_y) / span_y:.2f}'
+        for x, y in ordered
+    )
+    points.append(f'<polyline points="{line_points}" fill="none" stroke="#355c7d"/>')
+    _write_svg_document(path, title, ",".join(measures), "scatter", axis_label, points, 780, 390)
+
+
+def _write_dual_axis(
+    path: Path,
+    title: str,
+    rows: Sequence[Mapping[str, Any]],
+    label_fields: tuple[str, ...],
+    measures: tuple[str, ...],
+    axis_label: str,
+) -> None:
+    ordered = sorted(rows, key=lambda row: float(row[label_fields[0]]))
+    paths = []
+    colors = ("#355c7d", "#c06c84")
+    for measure_index, measure in enumerate(measures):
+        values = [float(row[measure]) for row in ordered]
+        minimum, maximum = min(values), max(values)
+        span = maximum - minimum or 1
+        points = " ".join(
+            f'{80 + index * (600 / max(1, len(values) - 1)):.2f},'
+            f'{330 - 240 * (value - minimum) / span:.2f}'
+            for index, value in enumerate(values)
+        )
+        paths.append(
+            f'<polyline points="{points}" fill="none" stroke="{colors[measure_index]}" '
+            f'stroke-width="3"/><text x="610" y="{35 + measure_index * 16}" '
+            f'fill="{colors[measure_index]}" font-size="10">{html.escape(measure)}</text>'
+        )
+    _write_svg_document(path, title, ",".join(measures), "dual-axis", axis_label, paths, 780, 380)
+
+
+def _write_svg_document(
+    path: Path,
+    title: str,
+    measures: str,
+    geometry: str,
+    subtitle: str,
+    shapes: Sequence[str],
+    width: int,
+    height: int,
+) -> None:
+    payload = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" data-measures="{html.escape(measures)}" '
+        f'data-geometry="{geometry}"><rect width="100%" height="100%" fill="white"/>'
+        f'<text x="10" y="28" font-size="20">{html.escape(title)}</text>'
+        f'<text x="10" y="47" font-size="11">{html.escape(subtitle)}</text>'
+        + "".join(shapes)
         + "</svg>\n"
     )
     path.write_text(payload, encoding="utf-8")
@@ -883,13 +1053,67 @@ def _write_json(path: Path, payload: object) -> None:
     )
 
 
-def _validate_new_output(output: Path) -> None:
-    if output.is_symlink():
+@contextmanager
+def _secure_parent(path: Path) -> Iterator[int]:
+    """Open the existing parent component-by-component without following links."""
+    if not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_DIRECTORY")):
+        raise RuntimeError("secure POSIX no-follow primitives are unavailable")
+    descriptor = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            for component in path.parent.parts[1:]:
+                next_descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+        except OSError as error:
+            raise ValueError("analysis output parent contains an unsafe path component") from error
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise PermissionError("analysis output parent must be an EUID-owned directory")
+        if stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise PermissionError("analysis output parent cannot be group/world writable")
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _export_lock(parent_fd: int) -> Iterator[None]:
+    descriptor = os.open(
+        ".ragbench-analysis-export.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=parent_fd,
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _require_absent(parent_fd: int, name: str) -> None:
+    if name in {"", ".", ".."} or os.sep in name:
+        raise ValueError("analysis output must be a direct child path")
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode):
         raise ValueError("analysis output cannot be a symlink")
-    if output.exists():
-        raise FileExistsError(f"immutable analysis output already exists: {output}")
-    current = output.parent
-    while current != current.parent:
-        if current.exists() and current.is_symlink():
-            raise ValueError("analysis output parent cannot contain a symlink")
-        current = current.parent
+    raise FileExistsError(f"immutable analysis output already exists: {name}")
+
+
+def _assert_directory_identity(path: Path, expected: os.stat_result) -> None:
+    actual = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(actual.st_mode)
+        or actual.st_dev != expected.st_dev
+        or actual.st_ino != expected.st_ino
+    ):
+        raise ValueError("analysis staging directory identity changed during export")

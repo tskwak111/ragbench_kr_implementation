@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -36,12 +38,32 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _load_bundle(path: Path) -> AnalysisBundle:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"analysis input must be a regular non-symlink file: {path}")
+    absolute = Path(os.path.abspath(path))
+    parent_fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor: int | None = None
     try:
-        return AnalysisBundle.model_validate_json(path.read_text(encoding="utf-8"))
+        for component in absolute.parent.parts[1:]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        descriptor = os.open(absolute.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("analysis input must be a regular non-symlink file")
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        return AnalysisBundle.model_validate_json(bytes(payload))
     except (OSError, ValidationError) as error:
         raise ValueError(f"invalid clean-snapshot analysis input: {path}") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_fd)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
