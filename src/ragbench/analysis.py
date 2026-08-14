@@ -399,33 +399,41 @@ def export_analysis(request: ExportRequest, output: Path) -> ExportManifest:
         )
         staging_identity = os.fstat(staging_fd)
         try:
-            tables_dir = staging / "tables"
-            figures_dir = staging / "figures"
             os.mkdir("tables", 0o700, dir_fd=staging_fd)
             os.mkdir("figures", 0o700, dir_fd=staging_fd)
+            tables_fd = os.open(
+                "tables", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=staging_fd
+            )
+            figures_fd = os.open(
+                "figures", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=staging_fd
+            )
             bundle = _merge_bundles(request.bundles)
             tables = _build_tables(bundle, request)
-            for name, rows in tables.items():
-                _write_csv(tables_dir / f"{name}.csv", rows)
-                _write_parquet(tables_dir / f"{name}.parquet", rows)
-            figure_names = tuple(
-                name
-                for name in tables
-                if name
-                in {
-                    "leaderboard",
-                    "parse_paired_difference",
-                    "chunk_heatmap",
-                    "retriever_by_type",
-                    "top_k_tradeoff",
-                    "prompt_abstention",
-                    "pareto_frontier",
-                    "latency_distribution",
-                    "failure_taxonomy",
-                }
-            )
-            for name in figure_names:
-                _write_figure(figures_dir / f"{name}.svg", name, tables[name])
+            try:
+                for name, rows in tables.items():
+                    _write_csv_at(tables_fd, f"{name}.csv", rows)
+                    _write_parquet_at(tables_fd, f"{name}.parquet", rows)
+                figure_names = tuple(
+                    name
+                    for name in tables
+                    if name
+                    in {
+                        "leaderboard",
+                        "parse_paired_difference",
+                        "chunk_heatmap",
+                        "retriever_by_type",
+                        "top_k_tradeoff",
+                        "prompt_abstention",
+                        "pareto_frontier",
+                        "latency_distribution",
+                        "failure_taxonomy",
+                    }
+                )
+                for name in figure_names:
+                    _write_figure_at(figures_fd, f"{name}.svg", name, tables[name])
+            finally:
+                os.close(tables_fd)
+                os.close(figures_fd)
             _assert_directory_identity(staging, staging_identity)
             file_hashes = _hash_files(staging)
             configs = sorted(bundle.configs, key=lambda row: row.experiment_id)
@@ -439,7 +447,7 @@ def export_analysis(request: ExportRequest, output: Path) -> ExportManifest:
                 figures=figure_names,
                 files=file_hashes,
             )
-            _write_json(staging / "manifest.json", manifest.model_dump(mode="json"))
+            _write_json_at(staging_fd, "manifest.json", manifest.model_dump(mode="json"))
             _assert_directory_identity(staging, staging_identity)
             _require_absent(parent_fd, output.name)
             os.rename(
@@ -794,23 +802,45 @@ def _normalize_cell(value: Any) -> str | int | bool | None:
     return str(value)
 
 
-def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+def _exclusive_descriptor(directory_fd: int, name: str) -> int:
+    if name in {"", ".", ".."} or os.sep in name:
+        raise ValueError("artifact name must be a direct child")
+    return os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory_fd,
+    )
+
+
+def _write_csv_at(
+    directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]
+) -> None:
     if not rows:
-        raise ValueError(f"table {path.stem} cannot be empty")
+        raise ValueError(f"table {name} cannot be empty")
     fields = tuple(rows[0])
-    with path.open("x", newline="", encoding="utf-8") as stream:
+    descriptor = _exclusive_descriptor(directory_fd, name)
+    with os.fdopen(descriptor, "w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _normalize_cell(row.get(key)) for key in fields})
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
-def _write_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+def _write_parquet_at(
+    directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]
+) -> None:
     normalized = [
         {key: _normalize_cell(value) for key, value in row.items()} for row in rows
     ]
     table = pa.Table.from_pylist(normalized)
-    pq.write_table(table, path, compression="zstd", write_statistics=True)
+    descriptor = _exclusive_descriptor(directory_fd, name)
+    with os.fdopen(descriptor, "wb") as stream:
+        pq.write_table(table, stream, compression="zstd", write_statistics=True)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 _FIGURE_SPEC: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
@@ -854,7 +884,12 @@ _FIGURE_SPEC: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
 }
 
 
-def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> None:
+def _write_figure_at(
+    directory_fd: int,
+    name: str,
+    title: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
     label_fields, measures, axis_label = _FIGURE_SPEC[title]
     geometry = {
         "chunk_heatmap": "heatmap",
@@ -862,15 +897,18 @@ def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> 
         "top_k_tradeoff": "dual-axis",
         "parse_paired_difference": "signed-bars",
     }.get(title, "grouped-bars")
-    selected = rows[:12]
+    selected = rows
     if geometry == "heatmap":
-        _write_heatmap(path, title, selected, label_fields, measures[0], axis_label)
+        payload = _render_heatmap(title, selected, label_fields, measures[0], axis_label)
+        _write_text_at(directory_fd, name, payload)
         return
     if geometry == "scatter":
-        _write_scatter(path, title, selected, measures, axis_label)
+        payload = _render_scatter(title, selected, measures, axis_label)
+        _write_text_at(directory_fd, name, payload)
         return
     if geometry == "dual-axis":
-        _write_dual_axis(path, title, selected, label_fields, measures, axis_label)
+        payload = _render_dual_axis(title, selected, label_fields, measures, axis_label)
+        _write_text_at(directory_fd, name, payload)
         return
     series: list[tuple[str, str, float]] = []
     for row in selected:
@@ -915,17 +953,16 @@ def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> 
         + "".join(bars)
         + "</svg>\n"
     )
-    path.write_text(payload, encoding="utf-8")
+    _write_text_at(directory_fd, name, payload)
 
 
-def _write_heatmap(
-    path: Path,
+def _render_heatmap(
     title: str,
     rows: Sequence[Mapping[str, Any]],
     label_fields: tuple[str, ...],
     measure: str,
     axis_label: str,
-) -> None:
+) -> str:
     x_values = sorted({str(row[label_fields[0]]) for row in rows})
     y_values = sorted({str(row[label_fields[1]]) for row in rows})
     values = [float(row[measure]) for row in rows]
@@ -950,8 +987,7 @@ def _write_heatmap(
         f'<text x="10" y="{108 + index * 55}" font-size="10">{html.escape(value)}</text>'
         for index, value in enumerate(y_values)
     ]
-    _write_svg_document(
-        path,
+    return _render_svg_document(
         title,
         measure,
         "heatmap",
@@ -962,13 +998,12 @@ def _write_heatmap(
     )
 
 
-def _write_scatter(
-    path: Path,
+def _render_scatter(
     title: str,
     rows: Sequence[Mapping[str, Any]],
     measures: tuple[str, ...],
     axis_label: str,
-) -> None:
+) -> str:
     xs = [float(row[measures[1]]) for row in rows]
     ys = [float(row[measures[0]]) for row in rows]
     max_x = max(xs, default=1) or 1
@@ -985,17 +1020,18 @@ def _write_scatter(
         for x, y in ordered
     )
     points.append(f'<polyline points="{line_points}" fill="none" stroke="#355c7d"/>')
-    _write_svg_document(path, title, ",".join(measures), "scatter", axis_label, points, 780, 390)
+    return _render_svg_document(
+        title, ",".join(measures), "scatter", axis_label, points, 780, 390
+    )
 
 
-def _write_dual_axis(
-    path: Path,
+def _render_dual_axis(
     title: str,
     rows: Sequence[Mapping[str, Any]],
     label_fields: tuple[str, ...],
     measures: tuple[str, ...],
     axis_label: str,
-) -> None:
+) -> str:
     ordered = sorted(rows, key=lambda row: float(row[label_fields[0]]))
     paths = []
     colors = ("#355c7d", "#c06c84")
@@ -1013,11 +1049,12 @@ def _write_dual_axis(
             f'stroke-width="3"/><text x="610" y="{35 + measure_index * 16}" '
             f'fill="{colors[measure_index]}" font-size="10">{html.escape(measure)}</text>'
         )
-    _write_svg_document(path, title, ",".join(measures), "dual-axis", axis_label, paths, 780, 380)
+    return _render_svg_document(
+        title, ",".join(measures), "dual-axis", axis_label, paths, 780, 380
+    )
 
 
-def _write_svg_document(
-    path: Path,
+def _render_svg_document(
     title: str,
     measures: str,
     geometry: str,
@@ -1025,7 +1062,7 @@ def _write_svg_document(
     shapes: Sequence[str],
     width: int,
     height: int,
-) -> None:
+) -> str:
     payload = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" data-measures="{html.escape(measures)}" '
@@ -1035,7 +1072,7 @@ def _write_svg_document(
         + "".join(shapes)
         + "</svg>\n"
     )
-    path.write_text(payload, encoding="utf-8")
+    return payload
 
 
 def _hash_files(root: Path) -> dict[str, str]:
@@ -1046,10 +1083,19 @@ def _hash_files(root: Path) -> dict[str, str]:
     }
 
 
-def _write_json(path: Path, payload: object) -> None:
-    path.write_text(
+def _write_text_at(directory_fd: int, name: str, payload: str) -> None:
+    descriptor = _exclusive_descriptor(directory_fd, name)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _write_json_at(directory_fd: int, name: str, payload: object) -> None:
+    _write_text_at(
+        directory_fd,
+        name,
         json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
 
