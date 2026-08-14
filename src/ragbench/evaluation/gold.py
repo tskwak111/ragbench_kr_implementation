@@ -203,16 +203,19 @@ class PreregistrationEnvelope(_FrozenModel):
     ) -> Self:
         if not signing_key:
             raise ValueError("preregistration signing key cannot be empty")
+        normalized_signer = signed_by.strip()
+        if not normalized_signer:
+            raise ValueError("preregistration signer cannot be blank")
         artifact_hash = canonical_json_hash(preregistration.model_dump(mode="json"))
         signature = hmac.new(
             signing_key,
-            _signature_payload(artifact_hash, signed_by, signed_at),
+            _signature_payload(artifact_hash, normalized_signer, signed_at),
             hashlib.sha256,
         ).hexdigest()
         return cls(
             preregistration=preregistration,
             artifact_sha256=artifact_hash,
-            signed_by=signed_by,
+            signed_by=normalized_signer,
             signature=signature,
             signed_at=signed_at,
         )

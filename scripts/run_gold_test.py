@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
 import os
@@ -104,18 +105,23 @@ def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> i
 def _load_executor(envelope: PreregistrationEnvelope) -> GoldExecutor:
     """Load only the exact source-hashed adapter frozen in preregistration."""
     module_name, function_name = envelope.preregistration.executor.entrypoint.split(":", 1)
-    module = importlib.import_module(module_name)
-    function = getattr(module, function_name, None)
-    if not callable(function) or not inspect.iscoroutinefunction(function):
-        raise RuntimeError("preregistered gold executor is not an async callable")
-    source_path = inspect.getsourcefile(function)
-    if source_path is None:
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
         raise RuntimeError("preregistered gold executor source is unavailable")
-    resolved_source = Path(source_path).resolve()
+    resolved_source = Path(spec.origin).resolve()
     _verify_tracked_source(resolved_source)
     actual_hash = hashlib.sha256(resolved_source.read_bytes()).hexdigest()
     if actual_hash != envelope.preregistration.executor.source_sha256:
         raise RuntimeError("preregistered gold executor source hash mismatch")
+    module = importlib.import_module(module_name)
+    function = getattr(module, function_name, None)
+    if not callable(function) or not inspect.iscoroutinefunction(function):
+        raise RuntimeError("preregistered gold executor is not an async callable")
+    if (
+        inspect.getsourcefile(function) is None
+        or Path(cast(str, inspect.getsourcefile(function))).resolve() != resolved_source
+    ):
+        raise RuntimeError("preregistered gold executor origin changed during import")
     return cast(GoldExecutor, function)
 
 

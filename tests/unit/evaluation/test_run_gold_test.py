@@ -93,3 +93,31 @@ def test_protected_output_path_is_uniquely_bound_before_unseal(tmp_path: Path) -
     verify_protected_output_path(output, preregistration)
     with pytest.raises(ValueError, match="protected output"):
         verify_protected_output_path(tmp_path / "favorable-rerun", preregistration)
+
+
+def test_executor_hash_is_verified_before_module_top_level_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script()
+    marker = tmp_path / "executed"
+    source = tmp_path / "evil_adapter.py"
+    source.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+        "async def execute(config, item):\n    return None\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(module, "_verify_tracked_source", lambda path: None)
+    executor = type(
+        "Executor",
+        (),
+        {"entrypoint": "evil_adapter:execute", "source_sha256": "0" * 64},
+    )()
+    envelope = type(
+        "Envelope",
+        (),
+        {"preregistration": type("Registration", (), {"executor": executor})()},
+    )()
+    with pytest.raises(RuntimeError, match="source hash"):
+        module._load_executor(envelope)
+    assert not marker.exists()
