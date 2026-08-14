@@ -10,6 +10,7 @@ import importlib
 import inspect
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +25,7 @@ from ragbench.evaluation.gold import (
     load_authorized_gold_cohort,
     load_preregistration,
     verify_frozen_inputs,
+    verify_protected_output_path,
     verify_runtime_code_commit,
     write_public_gold_report,
 )
@@ -69,6 +71,7 @@ def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> i
     if args.gold is None:
         raise ValueError("--gold is required only with --execute")
     verify_runtime_code_commit(PROJECT_ROOT, envelope.preregistration)
+    verify_protected_output_path(args.output, envelope.preregistration)
     if executor is None:
         executor = _load_executor(envelope)
     items = load_authorized_gold_cohort(
@@ -108,10 +111,33 @@ def _load_executor(envelope: PreregistrationEnvelope) -> GoldExecutor:
     source_path = inspect.getsourcefile(function)
     if source_path is None:
         raise RuntimeError("preregistered gold executor source is unavailable")
-    actual_hash = hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+    resolved_source = Path(source_path).resolve()
+    _verify_tracked_source(resolved_source)
+    actual_hash = hashlib.sha256(resolved_source.read_bytes()).hexdigest()
     if actual_hash != envelope.preregistration.executor.source_sha256:
         raise RuntimeError("preregistered gold executor source hash mismatch")
     return cast(GoldExecutor, function)
+
+
+def _verify_tracked_source(source_path: Path) -> None:
+    try:
+        relative = source_path.relative_to(PROJECT_ROOT.resolve())
+    except ValueError:
+        raise RuntimeError(
+            "preregistered gold executor must be inside the project repository"
+        ) from None
+    try:
+        subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(relative)],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "preregistered gold executor must be tracked at the frozen commit"
+        ) from error
 
 
 def main() -> None:

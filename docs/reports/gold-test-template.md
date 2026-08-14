@@ -28,6 +28,7 @@ public-safe sealed metadata without accepting or opening the gold file.
 - Explicit command and approved environment:
 - Dry-run artifact hash:
 - Protected result repository identifier:
+- Preregistered absolute protected-output path hash (one controlled run identity):
 - Restart/checkpoint events:
 - Same-cohort assertion for all three configurations:
 - Completed responses per configuration:
@@ -35,6 +36,9 @@ public-safe sealed metadata without accepting or opening the gold file.
 
 The gold run is one-way: after unsealing there are no configuration, prompt, threshold,
 or cohort tuning controls. Checkpoints are immutable and keyed by hashed item identity.
+Execution requires a fully clean worktree, the exact frozen commit, and an adapter tracked in
+that commit whose immediate source hash matches the signed preregistration. Signer identity and
+signature time are authenticated together with the preregistration hash.
 
 ## Aggregate results
 

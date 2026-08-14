@@ -60,6 +60,7 @@ def _prereg(configs: tuple[ExperimentConfig, ...] | None = None) -> Preregistrat
             ),
         ),
         code_commit="5421abd",
+        protected_output_path_hash=canonical_json_hash("/protected/test-gold-run"),
         executor=ExecutorSpec(
             entrypoint="ragbench.evaluation.test_adapter:execute",
             source_sha256="4" * 64,

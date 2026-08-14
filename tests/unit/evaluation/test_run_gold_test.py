@@ -9,6 +9,9 @@ from types import ModuleType
 
 import pytest
 
+from ragbench.core.hashing import canonical_json_hash
+from ragbench.evaluation.gold import verify_protected_output_path
+
 
 def _load_script() -> ModuleType:
     path = Path(__file__).resolve().parents[3] / "scripts" / "run_gold_test.py"
@@ -61,6 +64,7 @@ def test_execute_loads_only_the_source_hashed_preregistered_async_adapter(
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(module, "_verify_tracked_source", lambda path: None)
     sys.modules.pop("bound_adapter", None)
     executor = type(
         "Executor",
@@ -77,3 +81,15 @@ def test_execute_loads_only_the_source_hashed_preregistered_async_adapter(
     executor.source_sha256 = "0" * 64
     with pytest.raises(RuntimeError, match="source hash"):
         module._load_executor(envelope)
+
+
+def test_protected_output_path_is_uniquely_bound_before_unseal(tmp_path: Path) -> None:
+    output = tmp_path / "one-controlled-run"
+    preregistration = type(
+        "Registration",
+        (),
+        {"protected_output_path_hash": canonical_json_hash(str(output.resolve()))},
+    )()
+    verify_protected_output_path(output, preregistration)
+    with pytest.raises(ValueError, match="protected output"):
+        verify_protected_output_path(tmp_path / "favorable-rerun", preregistration)

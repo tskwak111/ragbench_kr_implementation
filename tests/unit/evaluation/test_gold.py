@@ -106,6 +106,7 @@ def _preregistration(configs: tuple[ExperimentConfig, ...]) -> GoldPreregistrati
             ordered_membership_hash="3" * 64,
         ),
         code_commit="5421abd",
+        protected_output_path_hash="5" * 64,
         executor=ExecutorSpec(
             entrypoint="ragbench.evaluation.test_adapter:execute",
             source_sha256="4" * 64,
@@ -222,3 +223,20 @@ def test_optional_solar_comparison_is_fixed_budgeted_and_after_core_only() -> No
         SolarExploratorySpec.model_validate(
             {**spec.model_dump(), "model_ids": ("solar-pro4", "solar-pro3")}
         )
+
+
+def test_signature_authenticates_signer_and_timestamp(tmp_path: Path) -> None:
+    configs = tuple(_config(tmp_path, suffix=value) for value in "abc")
+    envelope = PreregistrationEnvelope.sign(
+        _preregistration(configs),
+        signed_by="owner",
+        signing_key=b"owner-test-signing-key",
+        signed_at=datetime(2026, 8, 14, tzinfo=UTC),
+    )
+    path = tmp_path / "prereg.json"
+    path.write_text(envelope.model_dump_json(), encoding="utf-8")
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["signed_by"] = "attacker"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(ValueError, match="signature"):
+        load_preregistration(path, signing_key=b"owner-test-signing-key")

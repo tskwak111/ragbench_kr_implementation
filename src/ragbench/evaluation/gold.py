@@ -114,6 +114,7 @@ class GoldPreregistration(_FrozenModel):
     stopping_rule: str = Field(min_length=1)
     cohort: GoldCohort
     code_commit: str = Field(pattern=r"^[0-9a-f]{7,40}$")
+    protected_output_path_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     executor: ExecutorSpec
     exploratory_comparison: SolarExploratorySpec | None = None
 
@@ -203,7 +204,11 @@ class PreregistrationEnvelope(_FrozenModel):
         if not signing_key:
             raise ValueError("preregistration signing key cannot be empty")
         artifact_hash = canonical_json_hash(preregistration.model_dump(mode="json"))
-        signature = hmac.new(signing_key, artifact_hash.encode("ascii"), hashlib.sha256).hexdigest()
+        signature = hmac.new(
+            signing_key,
+            _signature_payload(artifact_hash, signed_by, signed_at),
+            hashlib.sha256,
+        ).hexdigest()
         return cls(
             preregistration=preregistration,
             artifact_sha256=artifact_hash,
@@ -815,7 +820,9 @@ def load_preregistration(path: Path, *, signing_key: bytes) -> PreregistrationEn
     if not signing_key:
         raise ValueError("preregistration signing key cannot be empty")
     expected_signature = hmac.new(
-        signing_key, envelope.artifact_sha256.encode("ascii"), hashlib.sha256
+        signing_key,
+        _signature_payload(envelope.artifact_sha256, envelope.signed_by, envelope.signed_at),
+        hashlib.sha256,
     ).hexdigest()
     if not hmac.compare_digest(envelope.signature, expected_signature):
         raise ValueError("preregistration signature verification failed")
@@ -855,7 +862,7 @@ def verify_runtime_code_commit(project_root: Path, preregistration: GoldPreregis
     """Bind a live unseal to the exact clean Git commit frozen before gold access."""
     try:
         completed = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            ["git", "status", "--porcelain"],
             cwd=project_root,
             check=True,
             capture_output=True,
@@ -871,9 +878,27 @@ def verify_runtime_code_commit(project_root: Path, preregistration: GoldPreregis
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError("cannot verify preregistered runtime code commit") from error
     if completed.stdout:
-        raise RuntimeError("gold execution requires a clean tracked worktree")
+        raise RuntimeError("gold execution requires a fully clean worktree")
     if not commit.startswith(preregistration.code_commit):
         raise RuntimeError("runtime code commit differs from preregistration")
+
+
+def verify_protected_output_path(path: Path, preregistration: GoldPreregistration) -> None:
+    if canonical_json_hash(str(path.resolve())) != preregistration.protected_output_path_hash:
+        raise ValueError("protected output path differs from preregistration")
+
+
+def _signature_payload(artifact_hash: str, signed_by: str, signed_at: datetime) -> bytes:
+    return json.dumps(
+        {
+            "artifact_sha256": artifact_hash,
+            "signed_at": signed_at.isoformat(),
+            "signed_by": signed_by,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
 
 
 def load_authorized_gold_cohort(
