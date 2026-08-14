@@ -1,5 +1,3 @@
-# This is intentionally an empty, unfrozen starter manifest.
-# Populate only after source selection, license review, and local PDF acquisition.
 schema_version: 1
 status: draft
 targets:
@@ -9,4 +7,384 @@ targets:
   maximum_pages: 2000
   maximum_organization_share: 0.35
   maximum_template_family_share: 0.35
-documents: []
+documents:
+- document_id: hyundai-sustainability-2024
+  title: 2024 현대자동차 지속가능성 보고서
+  organization: 현대자동차
+  year: 2024
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: hyundai-sustainability
+  source_url: https://org3.hyundai.com/content/dam/hyundai/ww/en/images/company/sustainability/about-sustainability/hmc-2024-sustainability-report-ko-v3.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/hyundai-sustainability-2024.pdf
+  sha256: d40fea4a0563f739685fbfc59ee22bc7c9d1e9eb0a9777649e7ba7b482cbb806
+  page_count: 125
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: koreanair-esg-2024
+  title: 대한항공 ESG 보고서 2024
+  organization: 대한항공
+  year: 2024
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: koreanair-esg
+  source_url: https://kr.img.news.koreanair.com/wp-content/uploads/2024/07/2024-%EB%8C%80%ED%95%9C%ED%95%AD%EA%B3%B5-%EC%A7%80%EC%86%8D%EA%B0%80%EB%8A%A5%EC%84%B1-%EB%B3%B4%EA%B3%A0%EC%84%9C.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/koreanair-esg-2024.pdf
+  sha256: 78c55dd1b9ff8c20e972dcd96189e577a477f3c93f9a2ef11c75232b7c75fc2a
+  page_count: 88
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: kostat-household-2024q4
+  title: 2024년 4분기 및 연간 지출 가계동향조사 결과
+  organization: 국가데이터처
+  year: 2025
+  document_type: statistical_report
+  language: ko
+  sector: public
+  content_stratum: table_heavy
+  template_family: kostat-household
+  source_url: https://mods.go.kr/boardDownload.es?bid=214&list_no=435252&seq=1
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/kostat-household-2024q4.pdf
+  sha256: cdbf4998dcf414c9d979280a67ae48ed9b00655a3f0170f9f9768ae544cfa4ad
+  page_count: 74
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: kt-esg-appendix-2024
+  title: KT ESG Report 2024 Appendix
+  organization: KT
+  year: 2024
+  document_type: sustainability_appendix
+  language: ko
+  sector: corporate
+  content_stratum: table_heavy
+  template_family: kt-esg
+  source_url: https://corp.kt.com/archive/ipgrpt/attach/now/APPENDIX.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/kt-esg-appendix-2024.pdf
+  sha256: a3a38b39f2e2d8b203de9079909a537ec72d6443def7e29eb77f235fb17a6008
+  page_count: 16
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: kt-esg-factbook-2024
+  title: KT ESG Report 2024 Factbook
+  organization: KT
+  year: 2024
+  document_type: sustainability_factbook
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: kt-esg
+  source_url: https://corp.kt.com/archive/ipgrpt/attach/now/FACTBOOK.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/kt-esg-factbook-2024.pdf
+  sha256: c8b3adee436751f5abc87c0184338e5f5f032b04cd02d80c5ac9c1d3f1a0e0e1
+  page_count: 94
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: lge-sustainability-2024-2025
+  title: 2024-2025 LG전자 지속가능경영보고서
+  organization: LG전자
+  year: 2025
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: text_heavy
+  template_family: lge-sustainability
+  source_url: https://www.lge.co.kr/kr/company/upload/sustainability/report/corporate_sustainability_management/2024-2025_LGE_Sustainability_Report%28KOR%29.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/lge-sustainability-2024-2025.pdf
+  sha256: b2f08ba2fd827ddd5689e6c116489696e2e1d4a5170f2fa4d1ab64109b9f959d
+  page_count: 169
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: mobis-climate-2023
+  title: 현대모비스 기후 시나리오 분석 보고서 2023
+  organization: 현대모비스
+  year: 2023
+  document_type: climate_scenario_report
+  language: ko
+  sector: corporate
+  content_stratum: table_heavy
+  template_family: mobis-climate
+  source_url: https://www.mobis.com/resources/pdf/Climate-related%20Scenario%20Analysis%20Report_kr.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/mobis-climate-2023.pdf
+  sha256: 460d97511d4ea810a1c3dd4f18a0b8271ed13c6b72fe3b3cfc54e01bcf5e300c
+  page_count: 11
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: mobis-climate-2024
+  title: 현대모비스 기후 시나리오 분석 보고서 2024
+  organization: 현대모비스
+  year: 2024
+  document_type: climate_scenario_report
+  language: ko
+  sector: corporate
+  content_stratum: table_heavy
+  template_family: mobis-climate
+  source_url: https://www.mobis.com/resources/pdf/Climate-related%20Scenario%20Analysis%20Report%282024%29_kr.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/mobis-climate-2024.pdf
+  sha256: 9c2800af3994369472ceaacc8e0ea7665d4cd0a2b769e586a96c167dae3a0950
+  page_count: 9
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: mobis-netzero-2023
+  title: 현대모비스 Net-Zero Report 2023
+  organization: 현대모비스
+  year: 2023
+  document_type: net_zero_report
+  language: ko
+  sector: corporate
+  content_stratum: text_heavy
+  template_family: mobis-netzero
+  source_url: https://www.mobis.com/resources/pdf/MOBIS_Net-Zero_Report_ko.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/mobis-netzero-2023.pdf
+  sha256: 28cc1d652d5f60a064b1eae0221abe0134042913b432475099eb9e850cc51cb8
+  page_count: 10
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: mobis-sustainability-2023
+  title: 현대모비스 지속가능성 보고서 2023
+  organization: 현대모비스
+  year: 2023
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: mobis-sustainability
+  source_url: https://www.mobis.com/upload/202306080348391800.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/mobis-sustainability-2023.pdf
+  sha256: b69b1b827e2f1c0740cd901d1fa910e4c2fc7f51a75b8f8ba8c7fd57f330fc34
+  page_count: 147
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: mobis-sustainability-2024
+  title: 현대모비스 지속가능성 보고서 2024
+  organization: 현대모비스
+  year: 2024
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: mobis-sustainability
+  source_url: https://www.mobis.com/upload/202406271140051970.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/mobis-sustainability-2024.pdf
+  sha256: 93bda1ac8e9e2dede3a14e4c77615ab48a3ff2219eccd483196889d12832e782
+  page_count: 165
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: nbk-annual-2022
+  title: 2022 국립중앙인체자원은행 연보
+  organization: 국립중앙인체자원은행
+  year: 2022
+  document_type: annual_report
+  language: ko
+  sector: public
+  content_stratum: table_heavy
+  template_family: nbk-annual
+  source_url: https://biobank.nih.go.kr/static/file/nhs2022.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/nbk-annual-2022.pdf
+  sha256: 22f3a8fa0c2e2a31308b84916176de30a33c74362b59d0c709cac85fa103ed47
+  page_count: 99
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: nbk-annual-2023
+  title: 2023 국립중앙인체자원은행 연보
+  organization: 국립중앙인체자원은행
+  year: 2023
+  document_type: annual_report
+  language: ko
+  sector: public
+  content_stratum: table_heavy
+  template_family: nbk-annual
+  source_url: https://biobank.nih.go.kr/static/file/nhs2023.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/nbk-annual-2023.pdf
+  sha256: 3f6d4f43cccecfc4e98a1cceddbe2daddef9333093e82e04b3921aeebc2f9bf5
+  page_count: 114
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: nbk-annual-2024
+  title: 2024 국립중앙인체자원은행 연보
+  organization: 국립중앙인체자원은행
+  year: 2024
+  document_type: annual_report
+  language: ko
+  sector: public
+  content_stratum: table_heavy
+  template_family: nbk-annual
+  source_url: https://biobank.nih.go.kr/static/file/nhs2024.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/nbk-annual-2024.pdf
+  sha256: 64979a9172244b1891d3c390c86616ca2ad3baabc08049f41739bc3562024f10
+  page_count: 118
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: samsung-electronics-sustainability-2023
+  title: 삼성전자 지속가능경영보고서 2023
+  organization: 삼성전자
+  year: 2023
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: samsung-electronics-sustainability
+  source_url: https://download.semiconductor.samsung.com/resources/others/Samsung_Electronics_Sustainability_Report_2023_KOR.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/samsung-electronics-sustainability-2023.pdf
+  sha256: 1356dc6aa4742410848b3ba8fa98208e46c297a48470a41a35251598e15870a1
+  page_count: 129
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: samsung-electronics-sustainability-2024
+  title: 삼성전자 지속가능경영보고서 2024
+  organization: 삼성전자
+  year: 2024
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: samsung-electronics-sustainability
+  source_url: https://download.semiconductor.samsung.com/resources/others/Samsung_Electronics_Sustainability_Report_2024_KOR.pdf
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/samsung-electronics-sustainability-2024.pdf
+  sha256: 69b911511998b9c9fad9940e8ba09d393670934891a3dace9bdb963133756cc2
+  page_count: 83
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: sds-sustainability-2021
+  title: 삼성SDS 지속가능경영보고서 2021
+  organization: 삼성SDS
+  year: 2021
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: text_heavy
+  template_family: sds-sustainability
+  source_url: https://www.samsungsds.com/kr/sustainability/report.html
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/sds-sustainability-2021.pdf
+  sha256: da7f47b08fd055099be3b21368c7ace5e014a4dea123c27ad772a2abc65f7bc0
+  page_count: 143
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: sds-sustainability-2022
+  title: 삼성SDS 지속가능경영보고서 2022
+  organization: 삼성SDS
+  year: 2022
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: sds-sustainability
+  source_url: https://www.samsungsds.com/kr/sustainability/report.html
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/sds-sustainability-2022.pdf
+  sha256: 8b50b35d69245f5a624a73c84d24ac4b5a8bf0a26a3788a29430ba3cce018d56
+  page_count: 107
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: sds-sustainability-2023
+  title: 삼성SDS 지속가능경영보고서 2023
+  organization: 삼성SDS
+  year: 2023
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: sds-sustainability
+  source_url: https://www.samsungsds.com/kr/sustainability/report.html
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/sds-sustainability-2023.pdf
+  sha256: a0b41371c0bd40370d1a60b0aa52279c11b184ee02f3ddd880ef42018bd8347a
+  page_count: 132
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.
+- document_id: sds-sustainability-2024
+  title: 삼성SDS 지속가능경영보고서 2024
+  organization: 삼성SDS
+  year: 2024
+  document_type: sustainability_report
+  language: ko
+  sector: corporate
+  content_stratum: mixed
+  template_family: sds-sustainability
+  source_url: https://www.samsungsds.com/kr/sustainability/report.html
+  downloaded_at: '2026-08-14'
+  license: Copyrighted official publication; local evaluation only; redistribution
+    not authorized
+  redistribution_status: nonredistributable
+  local_path: data/raw/sds-sustainability-2024.pdf
+  sha256: c98a68d68054b1c3a4ff08d1934c7421ab1d4c3a1c16dcbac96243def57d80bf
+  page_count: 148
+  inclusion_rationale: Official Korean publication selected for document-layout, table,
+    and grounded retrieval benchmarking.

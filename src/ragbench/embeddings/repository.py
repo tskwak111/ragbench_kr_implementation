@@ -194,16 +194,20 @@ def dense_search_spec(
         raise ValueError("candidate factor is below the index strategy minimum")
     predicate = f"ce.embedding_snapshot_id = '{snapshot_id}'::uuid"
     params: dict[str, object] = {"top_k": top_k}
+    artifact_join = ""
     document_clause = ""
     if document_ids:
+        artifact_join = (
+            "JOIN chunk_artifact ca ON ca.embedding_snapshot_id = ce.embedding_snapshot_id "
+            "AND ca.chunk_id = ce.chunk_id "
+        )
         document_clause = " AND ca.document_id = ANY(:document_ids)"
         params["document_ids"] = list(sorted(set(document_ids)))
     if plan.strategy == "full-vector-hnsw":
         full = f"ce.embedding::vector({dimension}) <=> CAST(:query AS vector({dimension}))"
         sql = (
             f"SELECT ce.chunk_id, 1.0 - ({full}) AS score FROM chunk_embedding ce "
-            "JOIN chunk_artifact ca ON ca.embedding_snapshot_id = ce.embedding_snapshot_id "
-            f"AND ca.chunk_id = ce.chunk_id WHERE {predicate}{document_clause} "
+            f"{artifact_join}WHERE {predicate}{document_clause} "
             f"ORDER BY {full} ASC, ce.chunk_id ASC LIMIT :top_k"
         )
     else:
@@ -215,8 +219,7 @@ def dense_search_spec(
         params["candidate_k"] = max(20, factor * top_k)
         sql = (
             "WITH candidates AS (SELECT ce.chunk_id, ce.embedding FROM chunk_embedding ce "
-            "JOIN chunk_artifact ca ON ca.embedding_snapshot_id = ce.embedding_snapshot_id "
-            f"AND ca.chunk_id = ce.chunk_id WHERE {predicate}{document_clause} "
+            f"{artifact_join}WHERE {predicate}{document_clause} "
             f"ORDER BY {indexed} ASC LIMIT :candidate_k) "
             f"SELECT ce.chunk_id, 1.0 - ({full}) AS score FROM candidates ce "
             f"ORDER BY {full} ASC, ce.chunk_id ASC LIMIT :top_k"
@@ -355,6 +358,7 @@ class SqlAlchemyEmbeddingRepository:
                     created_at=snapshot.created_at,
                 )
             )
+            await session.flush()
             session.add_all(
                 [
                     ChunkArtifact(
@@ -414,7 +418,7 @@ class SqlAlchemyEmbeddingRepository:
                     embedding_snapshot_id=snapshot_uuid,
                     chunk_id=chunk_id,
                     dimension=snapshot.dimension,
-                    embedding=vector,
+                    embedding=list(vector),
                 )
                 await session.execute(statement)
 

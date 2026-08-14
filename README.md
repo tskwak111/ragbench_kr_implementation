@@ -5,10 +5,11 @@ retrieval-augmented generation. It is an experiment platform, not a general-purp
 
 ## Key Results
 
-**No benchmark result is published yet.** The software framework and no-cost public fixture are
-implemented, while corpus collection, dual paid parsing, embedding, human validation, sealed-gold
-execution, and billing reconciliation remain operationally pending. Consequently, this repository
-does not claim that one parser, chunker, retriever, prompt, or Solar model is better than another.
+**No benchmark result is published yet.** The software framework, no-cost public fixture, and a
+local-only draft corpus manifest are implemented. Human corpus approval and freeze, dual paid
+parsing, embedding, human validation, sealed-gold execution, and billing reconciliation remain
+operationally pending. Consequently, this repository does not claim that one parser, chunker,
+retriever, prompt, or Solar model is better than another.
 
 The small offline fixture is a reproduction smoke test only. Its perfect deterministic scores are
 constructed expectations and are not research evidence.
@@ -44,13 +45,15 @@ paid network request.
 ## Dataset
 
 The target is 20–30 Korean corporate/public long documents totaling 1,500–2,000 pages, balanced
-across text-heavy and table-heavy material. That corpus is **not included or frozen yet**. Raw files
+across text-heavy and table-heavy material. The committed draft manifest records 20 locally
+acquired documents totaling 1,981 pages, but it is **not human-approved or frozen**. Raw files
 remain private and ignored by Git. The manifest records source URL, download date, SHA-256, page
-count, license/redistribution status, and inclusion rationale. Nonredistributable bytes are never
-part of public exports.
+count, license/redistribution status, and inclusion rationale. Every current record is conservatively
+nonredistributable, and document bytes are never part of public exports.
 
-The only committed content is a two-chunk synthetic fixture under `tests/fixtures/`. It exists to
-prove that a fresh environment can retrieve, cite, score, and cache a tiny run without a key.
+The only committed document content is a two-chunk synthetic fixture under `tests/fixtures/`. It
+exists to prove that a fresh environment can retrieve, cite, score, and cache a tiny run without a
+key. Corpus metadata is committed in `configs/corpus.yaml`; its source PDF bytes are not.
 
 ## Methodology
 

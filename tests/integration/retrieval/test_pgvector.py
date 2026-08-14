@@ -60,11 +60,13 @@ def _fixture() -> tuple[tuple[ChunkEmbeddingInput, ...], np.ndarray]:
             )
         )
         vector = np.zeros(DIMENSION)
-        angle = ((within_group // 2) - 6) * 0.015
+        tie_group = within_group // 2
+        angle = (tie_group - 6) * 0.05
         vector[group * 2] = np.cos(angle)
         vector[group * 2 + 1] = np.sin(angle)
-        # Repeated leading angles create ties; the adversarial tail reranks those ties.
-        vector[-1] = ((within_group * 7) % 9 - 4) * 0.002
+        # Each pair is an exact full-vector tie; distinct groups have a tail large enough
+        # to remain ordered after pgvector's float32 storage and 1e-5 score tolerance.
+        vector[-1] = ((tie_group * 7) % 9 - 4) * 0.02
         vectors.append(vector / np.linalg.norm(vector))
     return tuple(chunks), np.vstack(vectors)
 
@@ -128,9 +130,9 @@ async def test_pgvector_subvector_rerank_matches_numpy_for_50_queries_and_uses_i
             group = index % 4
             query = np.zeros(DIMENSION)
             target = (index % 7) - 3
-            query[group * 2] = np.cos(target * 0.015)
-            query[group * 2 + 1] = np.sin(target * 0.015)
-            query[-1] = ((index % 9) - 4) * 0.002
+            query[group * 2] = np.cos(target * 0.05)
+            query[group * 2 + 1] = np.sin(target * 0.05)
+            query[-1] = ((index % 9) - 4) * 0.02
             queries.append(query / np.linalg.norm(query))
         for query in queries:
             expected = cosine_top_k(query, matrix, 5, chunk_ids)
@@ -153,6 +155,10 @@ async def test_pgvector_subvector_rerank_matches_numpy_for_50_queries_and_uses_i
         async with engine.begin() as connection:
             await connection.execute(text("ANALYZE chunk_embedding"))
             await connection.execute(text("SET LOCAL enable_seqscan = off"))
+            # A 100-row fixture makes a btree scan plus sort cheaper than HNSW even
+            # with sequential scans disabled. Disable explicit sorts to prove the
+            # expression/predicate pair can use the ordered HNSW access path.
+            await connection.execute(text("SET LOCAL enable_sort = off"))
             explain = await connection.execute(
                 text("EXPLAIN " + spec.sql), {**spec.params, "query": query_literal}
             )

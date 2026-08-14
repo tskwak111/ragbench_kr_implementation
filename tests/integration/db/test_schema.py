@@ -138,20 +138,21 @@ async def test_initial_migration_creates_experiment_evidence_schema() -> None:
             assert document_id is not None
             assert experiment_id is not None
 
-            with pytest.raises(IntegrityError), connection.begin_nested():
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO document (title, sha256, source_uri, metadata_snapshot)
-                        VALUES (
-                            'Duplicate report',
-                            repeat('a', 64),
-                            'https://example.test/duplicate.pdf',
-                            '{}'
+            with pytest.raises(IntegrityError):
+                async with connection.begin_nested():
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO document (title, sha256, source_uri, metadata_snapshot)
+                            VALUES (
+                                'Duplicate report',
+                                repeat('a', 64),
+                                'https://example.test/duplicate.pdf',
+                                '{}'
+                            )
+                            """
                         )
-                        """
                     )
-                )
 
         repository = SqlAlchemyBudgetRepository(async_sessionmaker(engine, expire_on_commit=False))
         reservation = await repository.reserve_atomic(
