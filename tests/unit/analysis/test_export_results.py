@@ -122,6 +122,26 @@ def test_bundle_rejects_cross_cohort_and_unknown_experiment_rows() -> None:
     with pytest.raises(ValueError, match="same cohort and lineage"):
         ExportRequest(bundles=(_bundle(), second), public_salt="public-v1")
 
+    mismatched = _bundle().model_dump(mode="json")
+    mismatched["results"] = [
+        row
+        for row in mismatched["results"]
+        if not (
+            row["experiment_id"] == mismatched["configs"][1]["experiment_id"]
+            and row["question_id"] == "private-question-039"
+        )
+    ]
+    mismatched["usage"] = [
+        row
+        for row in mismatched["usage"]
+        if not (
+            row["experiment_id"] == mismatched["configs"][1]["experiment_id"]
+            and row["question_id"] == "private-question-039"
+        )
+    ]
+    with pytest.raises(ValueError, match="exact question cohort"):
+        AnalysisBundle.model_validate(mismatched)
+
 
 def test_failure_plan_is_deterministic_stratified_and_carries_required_inspection_order() -> None:
     first = plan_failure_sample(_bundle(), sample_size=50, public_salt="public-v1")
@@ -153,6 +173,55 @@ def test_cost_rows_separate_cache_apply_vat_and_do_not_invent_reconciliation_del
     )
     assert reconciled.status == "reconciled"
     assert reconciled.delta_usd == Decimal("0.008000")
+
+
+def test_parse_amortization_is_allocated_once_and_marginal_cost_is_incremental(
+    tmp_path: Path,
+) -> None:
+    payload = _bundle().model_dump(mode="json")
+    config_positions = {
+        config["experiment_id"]: index for index, config in enumerate(payload["configs"])
+    }
+    for usage in payload["usage"]:
+        usage["estimated_cost_usd"] = str(
+            Decimal("0.001000") * (config_positions[usage["experiment_id"]] + 1)
+        )
+    for config in payload["configs"]:
+        payload["usage"].append(
+            {
+                "experiment_id": config["experiment_id"],
+                "question_id": None,
+                "question_type": "all",
+                "operation": "parse",
+                "model_id": "document-parse-2026-08",
+                "estimated_cost_usd": "0.400000",
+                "cached": False,
+            }
+        )
+    bundle = AnalysisBundle.model_validate(payload)
+    rows, _ = build_cost_rows(bundle, vat_multiplier=Decimal("1.10"))
+    for config_id in {row.public_config_id for row in rows}:
+        config_rows = [row for row in rows if row.public_config_id == config_id]
+        assert sum(row.parse_amortized_cost_usd for row in config_rows) == Decimal("0.400000")
+        assert all(
+            row.parse_amortized_cost_usd == 0
+            for row in config_rows
+            if row.operation != "generate"
+        )
+
+    output = tmp_path / "analysis"
+    export_analysis(
+        ExportRequest(bundles=(bundle,), public_salt="public-v1", failure_sample_size=50),
+        output,
+    )
+    with (output / "tables" / "marginal_cost_quality.csv").open(newline="") as stream:
+        marginal = list(csv.DictReader(stream))
+    nonbaseline = [row for row in marginal if row["baseline_public_config_id"]]
+    assert nonbaseline
+    assert nonbaseline[0]["marginal_cost_per_quality_point_usd"] != (
+        Decimal(nonbaseline[0]["gross_cost_usd"])
+        / (Decimal(nonbaseline[0]["quality"]) * 100)
+    ).quantize(Decimal("0.000001"))
 
 
 def test_export_writes_core_csv_parquet_svg_and_hash_manifest_without_private_ids(
@@ -189,7 +258,18 @@ def test_export_writes_core_csv_parquet_svg_and_hash_manifest_without_private_id
         assert path.is_file() and not path.is_symlink()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
     assert (output / "tables" / "leaderboard.parquet").read_bytes()[:4] == b"PAR1"
-    assert (output / "figures" / "leaderboard.svg").read_text().startswith("<svg")
+    assert 'data-measures="mean_correctness"' in (
+        output / "figures" / "leaderboard.svg"
+    ).read_text()
+    assert 'data-measures="correctness_effect"' in (
+        output / "figures" / "parse_paired_difference.svg"
+    ).read_text()
+    assert 'data-measures="mean_correctness,mean_abstention"' in (
+        output / "figures" / "prompt_abstention.svg"
+    ).read_text()
+    assert 'data-measures="quality,gross_cost_usd"' in (
+        output / "figures" / "pareto_frontier.svg"
+    ).read_text()
     all_csv = "".join(path.read_text() for path in (output / "tables").glob("*.csv"))
     assert "private-question" not in all_csv
     assert "question_id" not in all_csv
@@ -198,6 +278,10 @@ def test_export_writes_core_csv_parquet_svg_and_hash_manifest_without_private_id
         reconciliation = next(csv.DictReader(stream))
     assert reconciliation["status"] == "not_reconciled"
     assert reconciliation["delta_usd"] == ""
+
+    with (output / "tables" / "prompt_abstention.csv").open(newline="") as stream:
+        prompt = next(csv.DictReader(stream))
+    assert "mean_abstention" in prompt
 
     with pytest.raises(FileExistsError, match="immutable"):
         export_analysis(

@@ -154,6 +154,28 @@ class AnalysisBundle(_FrozenModel):
         result_keys = {(row.experiment_id, row.question_id) for row in self.results}
         if len(result_keys) != len(self.results):
             raise ValueError("duplicate experiment-question results are not allowed")
+        question_cohorts = {
+            experiment_id: {
+                row.question_id for row in self.results if row.experiment_id == experiment_id
+            }
+            for experiment_id in experiment_ids
+        }
+        if any(
+            cohort != question_cohorts[experiment_ids[0]]
+            for cohort in question_cohorts.values()
+        ):
+            raise ValueError("experiments do not share the exact question cohort")
+        question_types: dict[str, str] = {}
+        for result in self.results:
+            existing_type = question_types.setdefault(result.question_id, result.question_type)
+            if existing_type != result.question_type:
+                raise ValueError("question type changed within the exact question cohort")
+        for usage in self.usage:
+            if usage.question_id is not None and (
+                usage.experiment_id,
+                usage.question_id,
+            ) not in result_keys:
+                raise ValueError("usage is outside the exact question cohort")
         for failure in self.failures:
             if (failure.experiment_id, failure.question_id) not in result_keys:
                 raise ValueError("failure is not bound to a result in the immutable cohort")
@@ -314,9 +336,12 @@ def build_cost_rows(
         net = sum((row.estimated_cost_usd for row in usage_rows), Decimal())
         net = net.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         denominator = question_counts[experiment_id]
-        amortized = (
-            parse_totals[experiment_id] / denominator if denominator else Decimal()
-        ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        amortized = Decimal()
+        if operation == "generate" and denominator:
+            covered_questions = {row.question_id for row in usage_rows if row.question_id}
+            amortized = (
+                parse_totals[experiment_id] * len(covered_questions) / denominator
+            ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         rows.append(
             CostRow(
                 public_config_id=_public_config_id(
@@ -385,7 +410,7 @@ def export_analysis(request: ExportRequest, output: Path) -> ExportManifest:
             }
         )
         for name in figure_names:
-            _write_svg(figures_dir / f"{name}.svg", name, tables[name])
+            _write_figure(figures_dir / f"{name}.svg", name, tables[name])
         file_hashes = _hash_files(staging)
         configs = sorted(bundle.configs, key=lambda row: row.experiment_id)
         manifest = ExportManifest(
@@ -480,8 +505,7 @@ def _build_tables(
     cost_by_config: dict[str, Decimal] = defaultdict(Decimal)
     for cost_row in cost_rows:
         cost_by_config[cost_row.public_config_id] += cost_row.gross_cost_usd
-    pareto = []
-    marginal = []
+    pareto: list[dict[str, Any]] = []
     for leaderboard_row in leaderboard:
         public_id = str(leaderboard_row["public_config_id"])
         cost = cost_by_config[public_id]
@@ -494,20 +518,7 @@ def _build_tables(
                 "pareto": _is_pareto(public_id, quality, cost, leaderboard, cost_by_config),
             }
         )
-        marginal.append(
-            {
-                "public_config_id": public_id,
-                "gross_cost_usd": cost,
-                "quality": quality,
-                "cost_per_quality_point_usd": (
-                    None
-                    if quality == 0
-                    else (cost / (quality * 100)).quantize(
-                        MONEY_QUANTUM, rounding=ROUND_HALF_UP
-                    )
-                ),
-            }
-        )
+    marginal = _marginal_rows(pareto)
     return {
         "leaderboard": leaderboard,
         "parse_paired_difference": parse_pairs,
@@ -600,6 +611,7 @@ def _aggregate_axes(
             **dict(zip(axes, key, strict=True)),
             "question_count": len(rows),
             "mean_correctness": _mean(row.correctness for row in rows),
+            "mean_abstention": _mean(row.abstention for row in rows),
             "mean_recall": _mean(row.recall for row in rows),
             "mean_latency_ms": _mean(Decimal(row.latency_ms) for row in rows),
             "cohort_public_id": canonical_json_hash({"salt": salt, "cohort": bundle.cohort_hash}),
@@ -670,6 +682,47 @@ def _is_pareto(
     return True
 
 
+def _marginal_rows(pareto_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    frontier = sorted(
+        (row for row in pareto_rows if row["pareto"] is True),
+        key=lambda row: (Decimal(str(row["quality"])), Decimal(str(row["gross_cost_usd"]))),
+    )
+    output: list[dict[str, Any]] = []
+    baseline: Mapping[str, Any] | None = None
+    for row in frontier:
+        quality = Decimal(str(row["quality"]))
+        cost = Decimal(str(row["gross_cost_usd"]))
+        delta_quality = (
+            None if baseline is None else quality - Decimal(str(baseline["quality"]))
+        )
+        delta_cost = (
+            None if baseline is None else cost - Decimal(str(baseline["gross_cost_usd"]))
+        )
+        output.append(
+            {
+                "public_config_id": row["public_config_id"],
+                "baseline_public_config_id": (
+                    None if baseline is None else baseline["public_config_id"]
+                ),
+                "gross_cost_usd": cost,
+                "quality": quality,
+                "delta_cost_usd": delta_cost,
+                "delta_quality_points": (
+                    None if delta_quality is None else delta_quality * 100
+                ),
+                "marginal_cost_per_quality_point_usd": (
+                    None
+                    if delta_quality is None or delta_cost is None or delta_quality <= 0
+                    else (delta_cost / (delta_quality * 100)).quantize(
+                        MONEY_QUANTUM, rounding=ROUND_HALF_UP
+                    )
+                ),
+            }
+        )
+        baseline = row
+    return output
+
+
 def _mean(values: Iterable[Decimal]) -> Decimal:
     materialized = list(values)
     if not materialized:
@@ -735,36 +788,80 @@ def _write_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     pq.write_table(table, path, compression="zstd", write_statistics=True)
 
 
-def _write_svg(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> None:
-    labels = [str(next(iter(row.values())))[:24] for row in rows[:12]]
-    values: list[float] = []
-    for row in rows[:12]:
-        numeric = next(
-            (
-                float(value)
-                for value in row.values()
-                if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
-            ),
-            0.0,
+_FIGURE_SPEC: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
+    "leaderboard": (("public_config_id",), ("mean_correctness",), "Correctness"),
+    "parse_paired_difference": (
+        ("parse_mode", "pair_id"),
+        ("correctness_effect",),
+        "Enhanced - Standard correctness",
+    ),
+    "chunk_heatmap": (
+        ("chunk_strategy", "parse_mode"),
+        ("mean_correctness",),
+        "Mean correctness",
+    ),
+    "retriever_by_type": (
+        ("retriever", "question_type"),
+        ("mean_correctness",),
+        "Mean correctness",
+    ),
+    "top_k_tradeoff": (("top_k",), ("mean_correctness", "mean_latency_ms"), "Quality / latency"),
+    "prompt_abstention": (
+        ("prompt_version",),
+        ("mean_correctness", "mean_abstention"),
+        "Correctness / abstention accuracy",
+    ),
+    "pareto_frontier": (
+        ("public_config_id",),
+        ("quality", "gross_cost_usd"),
+        "Quality / gross cost (VAT included)",
+    ),
+    "latency_distribution": (
+        ("public_config_id",),
+        ("p50_ms", "p95_ms", "p99_ms"),
+        "Latency percentiles (ms)",
+    ),
+    "failure_taxonomy": (
+        ("primary", "question_type"),
+        ("count",),
+        "Failure count",
+    ),
+}
+
+
+def _write_figure(path: Path, title: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    label_fields, measures, axis_label = _FIGURE_SPEC[title]
+    selected = rows[:12]
+    series: list[tuple[str, str, float]] = []
+    for row in selected:
+        label = " / ".join(
+            str(row.get(field, "all"))[:20] for field in label_fields if row.get(field) is not None
         )
-        values.append(max(0.0, numeric))
-    maximum = max(values, default=1.0) or 1.0
+        for measure in measures:
+            value = row.get(measure)
+            if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+                series.append((label or "all", measure, float(value)))
+    absolute_maximum = max((abs(value) for _, _, value in series), default=1.0) or 1.0
     bars = []
-    for index, (label, value) in enumerate(zip(labels, values, strict=True)):
-        y = 58 + index * 26
-        width = 460 * value / maximum
+    colors = ("#355c7d", "#c06c84", "#6c8e68")
+    for index, (label, measure, value) in enumerate(series):
+        y = 72 + index * 24
+        width = 430 * abs(value) / absolute_maximum
         bars.append(
-            f'<text x="10" y="{y + 14}" font-size="11">{html.escape(label)}</text>'
-            f'<rect x="190" y="{y}" width="{width:.2f}" height="17" fill="#355c7d"/>'
-            f'<text x="{195 + width:.2f}" y="{y + 13}" font-size="10">{value:.4g}</text>'
+            f'<text x="10" y="{y + 13}" font-size="10">{html.escape(label)}</text>'
+            f'<rect x="210" y="{y}" width="{width:.2f}" height="16" '
+            f'fill="{colors[measures.index(measure) % len(colors)]}"/>'
+            f'<text x="{215 + width:.2f}" y="{y + 12}" font-size="9">'
+            f'{html.escape(measure)} {value:.4g}</text>'
         )
-    height = 90 + 26 * len(bars)
+    height = 108 + 24 * len(bars)
     payload = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="760" height="{height}" '
-        'viewBox="0 0 760 '
-        f'{height}"><rect width="100%" height="100%" fill="white"/>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="820" height="{height}" '
+        f'viewBox="0 0 820 {height}" data-measures="{html.escape(",".join(measures))}">'
+        '<rect width="100%" height="100%" fill="white"/>'
         f'<text x="10" y="28" font-size="20" font-family="sans-serif">{html.escape(title)}</text>'
-        f'<text x="10" y="45" font-size="10" fill="#555">aggregate public-safe fixture</text>'
+        f'<text x="10" y="47" font-size="11" fill="#444">{html.escape(axis_label)}</text>'
+        '<text x="10" y="62" font-size="9" fill="#666">aggregate public-safe data</text>'
         + "".join(bars)
         + "</svg>\n"
     )
