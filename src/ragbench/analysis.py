@@ -456,6 +456,25 @@ def export_analysis(request: ExportRequest, output: Path) -> ExportManifest:
                 src_dir_fd=parent_fd,
                 dst_dir_fd=parent_fd,
             )
+            try:
+                published_fd = os.open(
+                    output.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except OSError as error:
+                _unlink_unsafe_publication(parent_fd, output.name)
+                raise ValueError("published analysis is not the staged directory") from error
+            try:
+                published = os.fstat(published_fd)
+                if (
+                    published.st_dev != staging_identity.st_dev
+                    or published.st_ino != staging_identity.st_ino
+                ):
+                    _unlink_unsafe_publication(parent_fd, output.name)
+                    raise ValueError("published analysis identity differs from staging")
+            finally:
+                os.close(published_fd)
             os.fsync(parent_fd)
             return manifest
         finally:
@@ -1163,3 +1182,10 @@ def _assert_directory_identity(path: Path, expected: os.stat_result) -> None:
         or actual.st_ino != expected.st_ino
     ):
         raise ValueError("analysis staging directory identity changed during export")
+
+
+def _unlink_unsafe_publication(parent_fd: int, name: str) -> None:
+    """Remove only a non-directory entry introduced by a detected publication race."""
+    metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISLNK(metadata.st_mode) or stat.S_ISREG(metadata.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
