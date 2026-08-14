@@ -51,10 +51,7 @@ async def test_fixed_korean_fact_numeric_paraphrase_comparison_is_reproducible()
         search_filter,
         chunk_ids,
         np.asarray([row["vector"] for row in payload["documents"]], dtype=np.float64),
-        {
-            row["query"]: np.asarray(row["vector"], dtype=np.float64)
-            for row in payload["queries"]
-        },
+        {row["query"]: np.asarray(row["vector"], dtype=np.float64) for row in payload["queries"]},
     )
     hybrid = HybridRetriever(dense, sparse)
 

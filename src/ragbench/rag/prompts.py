@@ -34,9 +34,7 @@ def render_prompt(
     if template.count("{{QUESTION_JSON}}") != 1 or template.count("{{CONTEXT}}") != 1:
         raise RuntimeError(f"prompt version {version.value} has an invalid template contract")
     question_json = _safe_json(json.dumps(question, ensure_ascii=False))
-    return template.replace("{{QUESTION_JSON}}", question_json).replace(
-        "{{CONTEXT}}", context.text
-    )
+    return template.replace("{{QUESTION_JSON}}", question_json).replace("{{CONTEXT}}", context.text)
 
 
 def _safe_json(value: str) -> str:

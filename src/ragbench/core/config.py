@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Self
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     upstage_query_embedding_model_id: str = "embedding-query"
     upstage_document_parse_model_id: str = "document-parse"
     upstage_embed_2_promotion_ends_at: datetime = datetime(2026, 8, 23, tzinfo=UTC)
+
+    @field_validator("upstage_api_key", mode="before")
+    @classmethod
+    def blank_api_key_is_unset(cls, value: object) -> object:
+        """Treat the intentionally empty `.env.example` value as no credential."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def require_api_key_for_live_tests(self) -> Self:

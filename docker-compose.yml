@@ -12,3 +12,44 @@ services:
       interval: 2s
       timeout: 5s
       retries: 15
+    volumes:
+      - ragbench_pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ragbench:ragbench@db:5432/ragbench_test
+      CACHE_DIR: /app/.ragbench/cache
+      RUN_LIVE_UPSTAGE_TESTS: "0"
+      ALLOW_GOLD_ACCESS: "0"
+    command:
+      - sh
+      - -c
+      - >-
+        uv run alembic upgrade head &&
+        exec uv run uvicorn ragbench.api.app:app --host 0.0.0.0 --port 8000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - ragbench_cache:/app/.ragbench
+
+volumes:
+  ragbench_pgdata:
+  ragbench_cache:

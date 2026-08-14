@@ -134,9 +134,7 @@ def paired_bootstrap(
         method = "document-cluster-paired-bootstrap"
     else:
         for _ in range(resamples):
-            sampled_effects.append(
-                sum(rng.choice(effects) for _ in effects) / len(effects)
-            )
+            sampled_effects.append(sum(rng.choice(effects) for _ in effects) / len(effects))
         method = "observation-paired-bootstrap-sensitivity"
     sampled_effects.sort()
     alpha = (1 - confidence) / 2

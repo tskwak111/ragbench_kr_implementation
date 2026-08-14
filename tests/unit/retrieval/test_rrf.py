@@ -21,17 +21,13 @@ def test_rrf_uses_one_based_rank_and_includes_missing_candidates() -> None:
     )
 
     assert [hit.chunk_id for hit in hits] == ["b", "a", "c"]
-    assert [hit.score for hit in hits] == pytest.approx(
-        [1 / 62 + 1 / 61, 1 / 61, 1 / 62]
-    )
+    assert [hit.score for hit in hits] == pytest.approx([1 / 62 + 1 / 61, 1 / 61, 1 / 62])
     assert [hit.rank for hit in hits] == [1, 2, 3]
 
 
 def test_rrf_applies_weights_and_stable_id_ties() -> None:
     """Catch ignored branch weights or iteration-order tie breaking."""
-    hits = reciprocal_rank_fusion(
-        [[_hit("z", 1)], [_hit("a", 1)]], k=10, weights=(2.0, 2.0)
-    )
+    hits = reciprocal_rank_fusion([[_hit("z", 1)], [_hit("a", 1)]], k=10, weights=(2.0, 2.0))
 
     assert [(hit.chunk_id, hit.score) for hit in hits] == [
         ("a", pytest.approx(2 / 11)),

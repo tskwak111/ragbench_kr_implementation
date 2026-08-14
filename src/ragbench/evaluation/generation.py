@@ -46,9 +46,7 @@ class MaterialClaim:
             not isinstance(value, str) for value in self.supporting_evidence_ids
         ):
             raise TypeError("supporting evidence IDs must be a set of strings")
-        object.__setattr__(
-            self, "supporting_evidence_ids", frozenset(self.supporting_evidence_ids)
-        )
+        object.__setattr__(self, "supporting_evidence_ids", frozenset(self.supporting_evidence_ids))
         if not self.claim_id.strip():
             raise ValueError("claim ID cannot be blank")
         if any(not item.strip() for item in self.supporting_evidence_ids):
@@ -148,8 +146,7 @@ def normalize_answer(value: str) -> str:
     return "".join(
         character
         for character in normalized
-        if not unicodedata.category(character).startswith(("P", "Z"))
-        and not character.isspace()
+        if not unicodedata.category(character).startswith(("P", "Z")) and not character.isspace()
     )
 
 
@@ -185,9 +182,7 @@ def _numeric_value(value: str) -> tuple[Decimal, str] | None:
     return number * multiplier, dimension
 
 
-def match_answer(
-    prediction: str, gold: str, *, aliases: Sequence[str] = ()
-) -> AnswerMatch:
+def match_answer(prediction: str, gold: str, *, aliases: Sequence[str] = ()) -> AnswerMatch:
     """Return independent exact, numeric, and allowlisted-alias decisions."""
     prediction_normalized = normalize_answer(prediction)
     gold_normalized = normalize_answer(gold)
@@ -209,9 +204,7 @@ def evaluate_generation(case: GenerationCase) -> GenerationMetric:
         match = match_answer(case.predicted_answer, case.expected_answer, aliases=case.aliases)
 
     faithfulness = (
-        sum(claim.supported for claim in case.claims) / len(case.claims)
-        if case.claims
-        else None
+        sum(claim.supported for claim in case.claims) / len(case.claims) if case.claims else None
     )
     claims_by_id = {claim.claim_id: claim for claim in case.claims}
     citations = [
@@ -285,10 +278,7 @@ def _aggregate(cases: Sequence[GenerationCase], *, include_groups: bool) -> Gene
         if answerable
         else None,
         MappingProxyType(
-            {
-                name: _aggregate(grouped[name], include_groups=False)
-                for name in sorted(grouped)
-            }
+            {name: _aggregate(grouped[name], include_groups=False) for name in sorted(grouped)}
         ),
     )
 

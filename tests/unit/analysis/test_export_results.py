@@ -213,9 +213,7 @@ def test_parse_amortization_is_allocated_once_and_marginal_cost_is_incremental(
         config_rows = [row for row in rows if row.public_config_id == config_id]
         assert sum(row.parse_amortized_cost_usd for row in config_rows) == Decimal("0.400000")
         assert all(
-            row.parse_amortized_cost_usd == 0
-            for row in config_rows
-            if row.operation != "generate"
+            row.parse_amortized_cost_usd == 0 for row in config_rows if row.operation != "generate"
         )
 
     output = tmp_path / "analysis"
@@ -228,8 +226,7 @@ def test_parse_amortization_is_allocated_once_and_marginal_cost_is_incremental(
     nonbaseline = [row for row in marginal if row["baseline_public_config_id"]]
     assert nonbaseline
     assert nonbaseline[0]["marginal_cost_per_quality_point_usd"] != (
-        Decimal(nonbaseline[0]["gross_cost_usd"])
-        / (Decimal(nonbaseline[0]["quality"]) * 100)
+        Decimal(nonbaseline[0]["gross_cost_usd"]) / (Decimal(nonbaseline[0]["quality"]) * 100)
     ).quantize(Decimal("0.000001"))
 
 
@@ -267,30 +264,28 @@ def test_export_writes_core_csv_parquet_svg_and_hash_manifest_without_private_id
         assert path.is_file() and not path.is_symlink()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
     assert (output / "tables" / "leaderboard.parquet").read_bytes()[:4] == b"PAR1"
-    assert 'data-measures="mean_correctness"' in (
-        output / "figures" / "leaderboard.svg"
-    ).read_text()
-    assert 'data-measures="correctness_effect"' in (
-        output / "figures" / "parse_paired_difference.svg"
-    ).read_text()
-    assert 'data-measures="mean_correctness,mean_abstention"' in (
-        output / "figures" / "prompt_abstention.svg"
-    ).read_text()
-    assert 'data-measures="quality,gross_cost_usd"' in (
-        output / "figures" / "pareto_frontier.svg"
-    ).read_text()
-    assert 'data-geometry="heatmap"' in (
-        output / "figures" / "chunk_heatmap.svg"
-    ).read_text()
-    assert 'data-geometry="scatter"' in (
-        output / "figures" / "pareto_frontier.svg"
-    ).read_text()
-    assert 'data-geometry="dual-axis"' in (
-        output / "figures" / "top_k_tradeoff.svg"
-    ).read_text()
-    assert 'data-geometry="signed-bars"' in (
-        output / "figures" / "parse_paired_difference.svg"
-    ).read_text()
+    assert (
+        'data-measures="mean_correctness"' in (output / "figures" / "leaderboard.svg").read_text()
+    )
+    assert (
+        'data-measures="correctness_effect"'
+        in (output / "figures" / "parse_paired_difference.svg").read_text()
+    )
+    assert (
+        'data-measures="mean_correctness,mean_abstention"'
+        in (output / "figures" / "prompt_abstention.svg").read_text()
+    )
+    assert (
+        'data-measures="quality,gross_cost_usd"'
+        in (output / "figures" / "pareto_frontier.svg").read_text()
+    )
+    assert 'data-geometry="heatmap"' in (output / "figures" / "chunk_heatmap.svg").read_text()
+    assert 'data-geometry="scatter"' in (output / "figures" / "pareto_frontier.svg").read_text()
+    assert 'data-geometry="dual-axis"' in (output / "figures" / "top_k_tradeoff.svg").read_text()
+    assert (
+        'data-geometry="signed-bars"'
+        in (output / "figures" / "parse_paired_difference.svg").read_text()
+    )
     all_csv = "".join(path.read_text() for path in (output / "tables").glob("*.csv"))
     assert "private-question" not in all_csv
     assert "question_id" not in all_csv

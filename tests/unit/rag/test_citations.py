@@ -32,9 +32,7 @@ def _bundle():  # type: ignore[no-untyped-def]
 
 def test_resolves_only_included_citation_ids_to_server_side_provenance() -> None:
     """Catch trusting model-supplied source metadata or non-retrieved chunk IDs."""
-    payload = parse_generated_answer(
-        '{"answer":"100억 원","citations":["C1"],"abstained":false}'
-    )
+    payload = parse_generated_answer('{"answer":"100억 원","citations":["C1"],"abstained":false}')
 
     citations = resolve_citations(payload.citations, _bundle())
 
@@ -92,12 +90,8 @@ def test_persistent_syntax_or_schema_failure_has_stable_error_code(raw: str) -> 
 
 def test_context_only_prompt_policy_requires_citations_or_clean_abstention() -> None:
     """Catch unsupported non-abstained answers and citations attached to abstentions."""
-    no_citation = parse_generated_answer(
-        '{"answer":"답","citations":[],"abstained":false}'
-    )
-    bad_abstention = parse_generated_answer(
-        '{"answer":"모름","citations":["C1"],"abstained":true}'
-    )
+    no_citation = parse_generated_answer('{"answer":"답","citations":[],"abstained":false}')
+    bad_abstention = parse_generated_answer('{"answer":"모름","citations":["C1"],"abstained":true}')
 
     with pytest.raises(CitationValidationError, match="requires at least one"):
         validate_answer_policy(no_citation, prompt_version="v2")

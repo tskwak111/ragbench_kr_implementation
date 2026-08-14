@@ -208,9 +208,7 @@ async def test_embed_query_uses_query_mode_and_validates_snapshot_completion() -
     chunks = (_chunk("chunk-b", "둘", 2), _chunk("chunk-a", "하나", 3), _chunk("chunk-c", "셋", 2))
     completed_snapshot = _snapshot(chunks=chunks, complete=True)
     await repository.create_snapshot(completed_snapshot, chunks)
-    gateway = RecordingGateway(
-        [EmbedResponse(((0.0, 2.0),), {}, "query", "embedding-query")]
-    )
+    gateway = RecordingGateway([EmbedResponse(((0.0, 2.0),), {}, "query", "embedding-query")])
     service = EmbeddingService(
         gateway, repository, max_batch_items=2, max_batch_tokens=10, supports_input_type=True
     )

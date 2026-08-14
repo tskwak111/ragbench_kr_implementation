@@ -140,6 +140,7 @@ def test_query_cli_fails_closed_when_no_grounded_service_is_configured() -> None
 
 def test_query_cli_preserves_generation_schema_error_code_without_raw_model_output() -> None:
     """Catch erasing the stable failure classification or leaking malformed provider content."""
+
     async def broken_answer(question: str) -> dict[str, object]:
         raise GenerationSchemaError(f"malformed provider output for {question}")
 

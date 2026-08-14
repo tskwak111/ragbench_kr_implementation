@@ -50,10 +50,7 @@ class RagConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.prompt_version, PromptVersion):
             raise ValueError("unknown prompt version")
-        if any(
-            not value.strip()
-            for value in (self.model_id, self.experiment_id, self.config_id)
-        ):
+        if any(not value.strip() for value in (self.model_id, self.experiment_id, self.config_id)):
             raise ValueError("model, experiment, and config identities cannot be blank")
         if isinstance(self.top_k, bool) or not isinstance(self.top_k, int) or self.top_k <= 0:
             raise ValueError("top_k must be a positive integer")
@@ -162,9 +159,7 @@ class RagService:
         )
 
 
-def _validate_resolved_chunks(
-    hits: Sequence[SearchHit], chunks: Sequence[RetrievedChunk]
-) -> None:
+def _validate_resolved_chunks(hits: Sequence[SearchHit], chunks: Sequence[RetrievedChunk]) -> None:
     by_id: dict[str, SearchHit] = {}
     for hit in hits:
         if hit.chunk_id in by_id:

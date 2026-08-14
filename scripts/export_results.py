@@ -70,9 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         vat = Decimal(args.vat_multiplier)
-        console = (
-            None if args.console_gross_usd is None else Decimal(args.console_gross_usd)
-        )
+        console = None if args.console_gross_usd is None else Decimal(args.console_gross_usd)
     except InvalidOperation as error:
         raise ValueError("cost arguments must be exact decimal strings") from error
     request = ExportRequest(

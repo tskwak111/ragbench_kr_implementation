@@ -240,5 +240,13 @@ def test_generation_state_fields_require_actual_booleans() -> None:
         MaterialClaim("c1", 1, {"e1"})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="answerable"):
         GenerationCase(
-            "q1", "fact", "답", (), 1, "답", 0, (), {}  # type: ignore[arg-type]
+            "q1",
+            "fact",
+            "답",
+            (),
+            1,
+            "답",
+            0,
+            (),
+            {},  # type: ignore[arg-type]
         )

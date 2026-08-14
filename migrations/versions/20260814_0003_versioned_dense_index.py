@@ -93,9 +93,7 @@ def downgrade() -> None:
     """Remove Task 8 vectors without dropping pgvector itself."""
     op.drop_table("chunk_embedding")
     op.drop_constraint("uq_embedding_snapshot_id_dimension", "embedding_snapshot", type_="unique")
-    op.drop_constraint(
-        "embedding_expected_count_nonnegative", "embedding_snapshot", type_="check"
-    )
+    op.drop_constraint("embedding_expected_count_nonnegative", "embedding_snapshot", type_="check")
     for column in (
         "index_state",
         "index_name",

@@ -93,9 +93,7 @@ def report_payload(report: ValidationReport) -> dict[str, object]:
         "quota_deficits": report.quota_deficits,
         "rejected_count": report.rejected_count,
         "rejection_counts": report.rejection_counts,
-        "rejection_samples": {
-            key: list(value) for key, value in report.rejection_samples.items()
-        },
+        "rejection_samples": {key: list(value) for key, value in report.rejection_samples.items()},
         "type_distribution": report.type_distribution,
         "validation_run_hash": report.validation_run_hash,
         "validation_config": report.validation_config,
@@ -154,9 +152,7 @@ def validate_candidates(
         )
         if candidate.unanswerable_transform is not None:
             evidence_documents = (candidate.unanswerable_transform.target_document_id,)
-        candidate_pages = {
-            (span.document_id, span.page) for span in candidate.evidence_spans
-        }
+        candidate_pages = {(span.document_id, span.page) for span in candidate.evidence_spans}
         if candidate.unanswerable_transform is not None:
             candidate_pages.add(
                 (
@@ -172,16 +168,13 @@ def validate_candidates(
         rules.extend(_evidence_rules(candidate, pages, active_config))
         rules.extend(_answer_rules(candidate))
         rules.extend(_unanswerable_rules(candidate, document_text, pages))
-        searchable = " ".join(
-            filter(None, (candidate.question, candidate.gold_answer or ""))
-        )
+        searchable = " ".join(filter(None, (candidate.question, candidate.gold_answer or "")))
         active_contamination_terms = (
             *active_config.contamination_terms,
             *contamination_terms,
         )
         if any(
-            _search_text(term) in _search_text(searchable)
-            for term in active_contamination_terms
+            _search_text(term) in _search_text(searchable) for term in active_contamination_terms
         ):
             rules.append("contamination_detected")
 
@@ -195,16 +188,13 @@ def validate_candidates(
             ):
                 rules.append("per_document_cap_exceeded")
             elif any(
-                accepted_page_counts[(document_id, page)]
-                >= active_config.per_page_cap
+                accepted_page_counts[(document_id, page)] >= active_config.per_page_cap
                 for document_id, page in candidate_pages
             ):
                 rules.append("per_page_cap_exceeded")
 
         unique_rules = tuple(dict.fromkeys(rules))
-        decision = (
-            ValidationDecision.REJECTED if unique_rules else ValidationDecision.ACCEPTED
-        )
+        decision = ValidationDecision.REJECTED if unique_rules else ValidationDecision.ACCEPTED
         item = candidate.model_copy(
             update={"validation": ValidationStatus(decision=decision, rule_codes=unique_rules)}
         )
@@ -219,23 +209,17 @@ def validate_candidates(
     accepted = tuple(
         item for item in validated if item.validation.decision is ValidationDecision.ACCEPTED
     )
-    rejections = Counter(
-        rule for item in validated for rule in item.validation.rule_codes
-    )
+    rejections = Counter(rule for item in validated for rule in item.validation.rule_codes)
     samples: dict[str, list[str]] = defaultdict(list)
     for item in validated:
         for rule in item.validation.rule_codes:
             if len(samples[rule]) < active_config.rejection_sample_limit:
                 samples[rule].append(item.candidate_id)
-    type_distribution = dict(
-        sorted(Counter(item.question_type.value for item in accepted).items())
-    )
+    type_distribution = dict(sorted(Counter(item.question_type.value for item in accepted).items()))
     config_snapshot = _validation_config_snapshot(active_config)
     effective_config_snapshot = {
         **config_snapshot,
-        "contamination_terms": sorted(
-            {*active_config.contamination_terms, *contamination_terms}
-        ),
+        "contamination_terms": sorted({*active_config.contamination_terms, *contamination_terms}),
     }
     validation_run_hash = canonical_json_hash(
         {
@@ -340,10 +324,10 @@ def _answer_rules(candidate: QuestionCandidate) -> list[str]:
     evidence_numbers = _numbers(evidence)
     if answer_numbers and not answer_numbers.issubset(evidence_numbers):
         rules.append("numeric_mismatch")
-    elif (
-        candidate.question_type in {QuestionType.FACT, QuestionType.NUMERIC_TABLE}
-        and _search_text(candidate.gold_answer) not in _search_text(evidence)
-    ):
+    elif candidate.question_type in {
+        QuestionType.FACT,
+        QuestionType.NUMERIC_TABLE,
+    } and _search_text(candidate.gold_answer) not in _search_text(evidence):
         rules.append("answer_not_supported")
     elif candidate.question_type not in {QuestionType.FACT, QuestionType.NUMERIC_TABLE}:
         answer_tokens = _content_token_sequence(candidate.gold_answer)
@@ -374,16 +358,12 @@ def _unanswerable_rules(
     rules: list[str] = []
     target_units = tuple(
         unit
-        for window in pages.get(
-            (transform.target_document_id, transform.target_page), ()
-        )
+        for window in pages.get((transform.target_document_id, transform.target_page), ())
         for unit in window.source_units
-        if unit.page == transform.target_page
-        and unit.chunk_id == transform.target_chunk_id
+        if unit.page == transform.target_page and unit.chunk_id == transform.target_chunk_id
     )
     if not any(
-        _search_text(transform.original_fact) in _search_text(unit.content)
-        for unit in target_units
+        _search_text(transform.original_fact) in _search_text(unit.content) for unit in target_units
     ):
         rules.append("original_fact_not_found")
     if _search_text(transform.transformed_fact) in _search_text(target):

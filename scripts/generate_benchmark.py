@@ -139,9 +139,7 @@ def _write_results(
     prefix = f"{plan_hash}-{validation_run_hash}"
     candidate_path = output_dir / f"{prefix}-candidates.jsonl"
     report_path = output_dir / f"{prefix}-validation-report.json"
-    candidate_payload = "".join(
-        item.model_dump_json() + "\n" for item in candidates
-    ).encode()
+    candidate_payload = "".join(item.model_dump_json() + "\n" for item in candidates).encode()
     report_bytes = (
         json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
@@ -275,10 +273,7 @@ async def _run(args: argparse.Namespace) -> int:
             if attempt == args.max_replacement_rounds:
                 break
             accepted_counts = Counter(
-                {
-                    QuestionType(kind): count
-                    for kind, count in report.type_distribution.items()
-                }
+                {QuestionType(kind): count for kind, count in report.type_distribution.items()}
             )
             current_plan = GenerationPlanner(generation_config).plan_replacements(
                 plan,

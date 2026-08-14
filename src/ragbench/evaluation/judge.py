@@ -28,8 +28,10 @@ JUDGE_RUBRIC = {
 }
 JUDGE_RUBRIC_HASH = canonical_json_hash(JUDGE_RUBRIC)
 _TOKEN_MARGIN = 16
-_MACHINE_ID = re.compile(r"\A(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)"
-                         r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_MACHINE_ID = re.compile(
+    r"\A(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)"
+    r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z"
+)
 _ASCII_TOKEN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9][A-Za-z0-9_-]*(?![A-Za-z0-9_-])")
 
 
@@ -81,9 +83,7 @@ class JudgeInput(_StrictModel):
 
     @model_validator(mode="after")
     def _identities_are_unambiguous(self) -> JudgeInput:
-        evidence_ids = [
-            item.evidence_id for item in (*self.gold_evidence, *self.retrieved_context)
-        ]
+        evidence_ids = [item.evidence_id for item in (*self.gold_evidence, *self.retrieved_context)]
         if len(evidence_ids) != len(set(evidence_ids)):
             raise ValueError("evidence IDs must be unique across judge input")
         claim_ids = _claim_ids(self.answer_claims)
@@ -154,8 +154,7 @@ class JudgeConfig(_StrictModel):
         if self.rubric_version != JUDGE_RUBRIC_VERSION:
             raise ValueError("unknown judge rubric version")
         if self.model_id == self.generator_model_id and not (
-            self.same_model_unavailability_reason
-            and self.same_model_unavailability_reason.strip()
+            self.same_model_unavailability_reason and self.same_model_unavailability_reason.strip()
         ):
             raise ValueError("judge model must be distinct from generator when available")
         if self.temperature is not None and self.temperature != 0:
@@ -201,15 +200,17 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
         raise JudgeParseError("judge response is not strict rubric JSON") from None
     expected_claim_ids = set(_claim_ids(value.answer_claims))
     returned_claim_ids = [item.claim_id for item in record.claims]
-    if len(returned_claim_ids) != len(set(returned_claim_ids)) or set(
-        returned_claim_ids
-    ) != expected_claim_ids:
+    if (
+        len(returned_claim_ids) != len(set(returned_claim_ids))
+        or set(returned_claim_ids) != expected_claim_ids
+    ):
         raise JudgeParseError("judge must evaluate every supplied claim exactly once")
     expected_citations = set(value.model_citation_ids)
     returned_citations = [item.citation_id for item in record.citations]
-    if len(returned_citations) != len(set(returned_citations)) or set(
-        returned_citations
-    ) != expected_citations:
+    if (
+        len(returned_citations) != len(set(returned_citations))
+        or set(returned_citations) != expected_citations
+    ):
         raise JudgeParseError("judge must evaluate every supplied citation exactly once")
     allowed_evidence = {
         item.evidence_id for item in (*value.gold_evidence, *value.retrieved_context)
@@ -290,10 +291,13 @@ def parse_judge_response(raw: str, value: JudgeInput) -> JudgeRecord:
 def _rationale_mentions(evidence_id: str, rationale: str) -> bool:
     # Korean postpositions are commonly attached directly to Latin evidence IDs (for example
     # ``e1이``), so boundaries apply only to the ASCII ID alphabet.
-    return re.search(
-        rf"(?<![A-Za-z0-9_-]){re.escape(evidence_id)}(?![A-Za-z0-9_-])",
-        rationale,
-    ) is not None
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(evidence_id)}(?![A-Za-z0-9_-])",
+            rationale,
+        )
+        is not None
+    )
 
 
 def _evidence_like_ids(rationale: str) -> set[str]:
@@ -355,8 +359,7 @@ class CalibrationCandidate:
         ):
             raise TypeError("calibration risk flags must be booleans")
         if any(
-            not value.strip()
-            for value in (self.response_id, self.system_id, self.question_type)
+            not value.strip() for value in (self.response_id, self.system_id, self.question_type)
         ):
             raise ValueError("calibration candidate identity cannot be blank")
 
@@ -440,8 +443,7 @@ class CalibrationPair:
         ):
             raise TypeError("calibration scores must be real numbers, not booleans")
         if any(
-            not item.strip()
-            for item in (self.response_id, self.question_type, self.reviewer_id)
+            not item.strip() for item in (self.response_id, self.question_type, self.reviewer_id)
         ):
             raise ValueError("calibration label identity cannot be blank")
         if any(
@@ -507,8 +509,7 @@ def calibrate_judge(
         raise ValueError("calibration response IDs must be unique")
     nonhuman = {"synthetic", "fixture", "automated", "model", "judge"}
     if any(
-        not pair.human_attested
-        or any(marker in pair.reviewer_id.casefold() for marker in nonhuman)
+        not pair.human_attested or any(marker in pair.reviewer_id.casefold() for marker in nonhuman)
         for pair in pairs
     ):
         raise ValueError("judge calibration requires real human reviewer labels")
@@ -517,9 +518,9 @@ def calibrate_judge(
     spearman = _correlation(_ranks(judge), _ranks(human))
     predicted = [value >= binary_threshold for value in judge]
     expected = [value >= binary_threshold for value in human]
-    agreement = sum(
-        left == right for left, right in zip(predicted, expected, strict=True)
-    ) / len(pairs)
+    agreement = sum(left == right for left, right in zip(predicted, expected, strict=True)) / len(
+        pairs
+    )
     true_positive = sum(left and right for left, right in zip(predicted, expected, strict=True))
     false_positive = sum(
         left and not right for left, right in zip(predicted, expected, strict=True)

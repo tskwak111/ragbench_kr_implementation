@@ -1,0 +1,30 @@
+schema_version: offline-fixture-v1
+name: mini-public-experiment
+snapshots:
+  corpus: fixture-corpus-v1
+  parse: fixture-parse-v1
+  chunks: fixture-chunks-v1
+  embeddings: none
+  questions: fixture-questions-v1
+retrieval:
+  top_k: 1
+documents:
+  - chunk_id: fixture-sales
+    document_id: fixture-report
+    content: "2025년 매출은 120억원이다."
+  - chunk_id: fixture-employees
+    document_id: fixture-report
+    content: "2025년 임직원 수는 50명이다."
+questions:
+  - question_id: fixture-q-sales
+    question_type: numeric
+    prompt: "2025년 매출은 얼마인가?"
+    expected_answer: "120억원"
+    answerable: true
+    evidence_chunk_ids: [fixture-sales]
+  - question_id: fixture-q-unknown
+    question_type: unanswerable
+    prompt: "2024년 해외 법인 수는 몇 개인가?"
+    expected_answer: null
+    answerable: false
+    evidence_chunk_ids: []

@@ -121,8 +121,7 @@ def _snapshot(chunks: tuple[ChunkEmbeddingInput, ...]) -> EmbeddingSnapshot:
 
 
 @pytest.mark.asyncio
-async def test_manifest_registration_is_immutable_and_exact_finalization_rejects_missing_vectors(
-) -> None:
+async def test_manifest_is_immutable_and_finalization_rejects_missing_vectors() -> None:
     """Catch count-only completion or changing source evidence after snapshot registration."""
     chunks = _chunks()
     snapshot = _snapshot(chunks)
@@ -165,9 +164,7 @@ def test_chunk_source_metadata_is_copied_and_canonically_hashed() -> None:
         "doc-a",
         "내용",
         1,
-        source_metadata=frozen_source_metadata(
-            {"page_start": 1, "source_block_ids": ["b", "a"]}
-        ),
+        source_metadata=frozen_source_metadata({"page_start": 1, "source_block_ids": ["b", "a"]}),
     )
     metadata["page_start"] = 99
 

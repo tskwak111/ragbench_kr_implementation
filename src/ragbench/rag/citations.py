@@ -101,9 +101,7 @@ def resolve_citations(
     for citation_id in citation_ids:
         item = allowed.get(citation_id)
         if item is None:
-            raise CitationValidationError(
-                f"citation {citation_id!r} is not in included context"
-            )
+            raise CitationValidationError(f"citation {citation_id!r} is not in included context")
         output.append(
             ResolvedCitation(
                 citation_id=item.citation_id,

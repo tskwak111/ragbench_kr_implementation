@@ -49,6 +49,4 @@ class RetrievalEvidence:
 
 
 class Retriever(Protocol):
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]: ...
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]: ...

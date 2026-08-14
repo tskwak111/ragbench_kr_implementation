@@ -229,9 +229,7 @@ class SourceWindow(_FrozenModel):
 
 
 class GenerationConfig(_FrozenModel):
-    quotas: Mapping[QuestionType, int] = Field(
-        default_factory=lambda: dict(DEFAULT_QUOTAS)
-    )
+    quotas: Mapping[QuestionType, int] = Field(default_factory=lambda: dict(DEFAULT_QUOTAS))
     per_document_cap: int = Field(default=300, gt=0)
     per_page_cap: int = Field(default=30, gt=0)
     batch_size: int = Field(default=12, gt=0, le=100)
@@ -388,8 +386,7 @@ class GenerationPlanner:
             raise ValueError("replacement attempt must be positive")
         targets = target_quotas or self.config.quotas
         deficits = {
-            kind: max(0, target - accepted_counts.get(kind, 0))
-            for kind, target in targets.items()
+            kind: max(0, target - accepted_counts.get(kind, 0)) for kind, target in targets.items()
         }
         deficits = {kind: count for kind, count in deficits.items() if count}
         if not deficits:
@@ -417,8 +414,7 @@ class GenerationPlanner:
                 if doc_counts.get(window.document_id, 0) >= self.config.per_document_cap:
                     continue
                 if any(
-                    page_counts.get((window.document_id, page), 0)
-                    >= self.config.per_page_cap
+                    page_counts.get((window.document_id, page), 0) >= self.config.per_page_cap
                     for page in pages
                 ):
                     continue
@@ -697,9 +693,10 @@ class BenchmarkGenerator:
         except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as error:
             raise ValueError("provider returned invalid candidate batch JSON") from error
         expected_types = tuple(job.question_type for job in batch.jobs)
-        if len(candidates) != len(batch.jobs) or tuple(
-            item.question_type for item in candidates
-        ) != expected_types:
+        if (
+            len(candidates) != len(batch.jobs)
+            or tuple(item.question_type for item in candidates) != expected_types
+        ):
             raise ValueError("provider batch does not match planned jobs")
         if len({item.candidate_id for item in candidates}) != len(candidates):
             raise ValueError("provider batch contains duplicate candidate IDs")
@@ -712,9 +709,7 @@ class BenchmarkGenerator:
                     "prompt_version": plan.prompt_version,
                     "plan_hash": plan.plan_hash,
                     "batch_id": batch.batch_id,
-                    "source_window_hash": canonical_json_hash(
-                        job.window.model_dump(mode="json")
-                    ),
+                    "source_window_hash": canonical_json_hash(job.window.model_dump(mode="json")),
                     "correlation_id": response.correlation_id,
                     "cache_hit": response.cache_hit,
                 }
@@ -866,8 +861,7 @@ def _validate_candidate_window(candidate: QuestionCandidate, window: SourceWindo
         units = tuple(
             unit
             for unit in window.source_units
-            if unit.page == transform.target_page
-            and unit.chunk_id == transform.target_chunk_id
+            if unit.page == transform.target_page and unit.chunk_id == transform.target_chunk_id
         )
         if (
             transform.target_document_id != window.document_id
@@ -898,9 +892,7 @@ def _validate_resumed_candidates(
     if len(candidates) != len(batch.jobs):
         raise RuntimeError("checkpoint does not match current plan provenance")
     for candidate, job in zip(candidates, batch.jobs, strict=True):
-        expected_id = canonical_json_hash(
-            {"plan_hash": plan.plan_hash, "job_ordinal": job.ordinal}
-        )
+        expected_id = canonical_json_hash({"plan_hash": plan.plan_hash, "job_ordinal": job.ordinal})
         expected_window_hash = canonical_json_hash(job.window.model_dump(mode="json"))
         if (
             candidate.candidate_id != expected_id
@@ -942,9 +934,7 @@ def _search_text(value: str) -> str:
 
 
 def _fact_tokens(value: str) -> tuple[str, ...]:
-    return tuple(
-        re.findall(r"[0-9a-z가-힣]+", unicodedata.normalize("NFKC", value).lower())
-    )
+    return tuple(re.findall(r"[0-9a-z가-힣]+", unicodedata.normalize("NFKC", value).lower()))
 
 
 def _single_value_substitution(original: str, transformed: str) -> tuple[str, str]:

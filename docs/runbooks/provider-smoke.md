@@ -29,7 +29,8 @@ generated PDF page, or a short Korean embedding input. The CLI requires both `--
 
 ```bash
 export RUN_LIVE_UPSTAGE_TESTS=1
-export UPSTAGE_API_KEY='set-in-your-shell-only'
+read -s UPSTAGE_API_KEY
+export UPSTAGE_API_KEY
 uv run ragbench smoke solar --execute --approve --json
 uv run ragbench smoke parse --execute --approve --json
 uv run ragbench smoke embed --execute --approve --json

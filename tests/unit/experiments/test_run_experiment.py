@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,3 +88,27 @@ def test_relative_output_destination_is_resolved_against_config_location(tmp_pat
     loaded = ExperimentConfig.from_yaml(config_path)
 
     assert loaded.output_dir == str((tmp_path / "artifacts").resolve())
+
+
+def test_offline_fixture_executes_without_provider_or_key(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    args = argparse.Namespace(
+        config=root / "tests" / "fixtures" / "mini-experiment.yaml",
+        prices=root / "configs" / "prices.yaml",
+        execute=False,
+        offline=True,
+        output=tmp_path,
+        resume=None,
+        confirm_plan=None,
+        available_budget_usd=None,
+        diagnosis_acknowledgement=None,
+    )
+
+    assert _run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "offline-experiment-result-v1"
+    assert payload["provider_calls"] == 0
+    assert payload["response_count"] == 2

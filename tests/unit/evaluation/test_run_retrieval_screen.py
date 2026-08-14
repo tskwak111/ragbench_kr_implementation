@@ -82,3 +82,17 @@ def test_real_execution_is_fail_closed_until_a_store_and_snapshot_loader_are_bou
                 str(_inventory(tmp_path)),
             ]
         )
+
+
+def test_offline_fixture_config_runs_real_no_cost_screen(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    config = PROJECT_ROOT / "tests" / "fixtures" / "mini-screen.yaml"
+
+    exit_code = SCRIPT.main(["--config", str(config), "--output", str(tmp_path)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["schema_version"] == "offline-screen-result-v1"
+    assert payload["provider_calls"] == 0
+    assert payload["metrics"]["hit_at_k"] == 1.0

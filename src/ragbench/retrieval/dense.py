@@ -79,9 +79,7 @@ class DenseRetriever:
         self._repository = repository
         self._token_counter = token_counter
 
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]:
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         query_vector = await self._embeddings.embed_query(

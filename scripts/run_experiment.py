@@ -17,6 +17,7 @@ from ragbench.experiments.runner import (
     authorize_paid_execution,
     build_dry_run_plan,
 )
+from ragbench.offline import run_offline_experiment
 from ragbench.providers.upstage.pricing import PriceBook
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--prices", type=Path, default=PROJECT_ROOT / "configs" / "prices.yaml")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run a deterministic public fixture with zero provider calls.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=PROJECT_ROOT / ".ragbench" / "fixtures" / "experiments",
+    )
     parser.add_argument("--resume")
     parser.add_argument("--confirm-plan")
     parser.add_argument("--available-budget-usd", type=Decimal)
@@ -46,6 +57,19 @@ def _plan_payload(plan: DryRunPlan) -> dict[str, object]:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if getattr(args, "offline", False):
+        if args.execute or args.resume is not None or args.confirm_plan is not None:
+            raise ExperimentCommandError(
+                "--offline cannot be combined with paid execution or resume controls"
+            )
+        result = run_offline_experiment(
+            args.config,
+            output_root=getattr(
+                args, "output", PROJECT_ROOT / ".ragbench" / "fixtures" / "experiments"
+            ),
+        )
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False, sort_keys=True))
+        return 0
     config = ExperimentConfig.from_yaml(args.config)
     prices = PriceBook.from_yaml(args.prices)
     repository = FileExperimentRepository(Path(config.output_dir))

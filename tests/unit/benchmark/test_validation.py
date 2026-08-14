@@ -144,9 +144,12 @@ def test_validation_groups_exact_and_offline_semantic_like_duplicates() -> None:
     report = validate_candidates(candidates, _corpus())
 
     assert report.accepted_count == 1
-    assert Counter(
-        rule for item in report.items for rule in item.validation.rule_codes
-    )["duplicate_question"] == 2
+    assert (
+        Counter(rule for item in report.items for rule in item.validation.rule_codes)[
+            "duplicate_question"
+        ]
+        == 2
+    )
     assert report.duplicate_groups == (("first", "exact", "near"),)
 
 
@@ -202,9 +205,7 @@ def test_quota_document_caps_and_report_distributions_are_deterministic() -> Non
     assert report.rejection_counts == {"per_document_cap_exceeded": 2}
     assert report.type_distribution == {"fact": 1}
     assert report.document_distribution == {"doc-1": 1}
-    assert report.rejection_samples == {
-        "per_document_cap_exceeded": ("c1", "c2")
-    }
+    assert report.rejection_samples == {"per_document_cap_exceeded": ("c1", "c2")}
 
 
 def test_completion_floor_distinguishes_normal_dod_from_emergency_only() -> None:

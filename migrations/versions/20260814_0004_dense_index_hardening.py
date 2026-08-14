@@ -211,9 +211,7 @@ $migration$;
     op.drop_constraint("fk_retrieval_result_legacy_chunk", "retrieval_result", type_="foreignkey")
     op.drop_column("retrieval_result", "embedding_snapshot_id")
     op.execute("UPDATE retrieval_result SET chunk_id = legacy_chunk_id::text")
-    op.alter_column(
-        "retrieval_result", "chunk_id", type_=UUID, postgresql_using="chunk_id::uuid"
-    )
+    op.alter_column("retrieval_result", "chunk_id", type_=UUID, postgresql_using="chunk_id::uuid")
     op.create_foreign_key(
         "fk_retrieval_result_chunk_id_chunk",
         "retrieval_result",
@@ -226,8 +224,6 @@ $migration$;
     op.drop_constraint("chunk_embedding_finite_nonzero", "chunk_embedding", type_="check")
     op.drop_constraint("fk_chunk_embedding_artifact", "chunk_embedding", type_="foreignkey")
     op.drop_table("chunk_artifact")
-    op.drop_constraint(
-        "embedding_candidate_factor_positive", "embedding_snapshot", type_="check"
-    )
+    op.drop_constraint("embedding_candidate_factor_positive", "embedding_snapshot", type_="check")
     for column in ("candidate_factor", "index_strategy", "artifact_manifest_hash"):
         op.drop_column("embedding_snapshot", column)

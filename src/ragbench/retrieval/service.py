@@ -33,9 +33,7 @@ class HybridRetriever:
         self._rrf_k = rrf_k
         self._weights = resolved_weights
 
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]:
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         branch_k = max(20, 4 * top_k)

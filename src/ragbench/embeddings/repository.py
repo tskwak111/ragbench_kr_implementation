@@ -199,9 +199,7 @@ def dense_search_spec(
         document_clause = " AND ca.document_id = ANY(:document_ids)"
         params["document_ids"] = list(sorted(set(document_ids)))
     if plan.strategy == "full-vector-hnsw":
-        full = (
-            f"ce.embedding::vector({dimension}) <=> CAST(:query AS vector({dimension}))"
-        )
+        full = f"ce.embedding::vector({dimension}) <=> CAST(:query AS vector({dimension}))"
         sql = (
             f"SELECT ce.chunk_id, 1.0 - ({full}) AS score FROM chunk_embedding ce "
             "JOIN chunk_artifact ca ON ca.embedding_snapshot_id = ce.embedding_snapshot_id "
@@ -289,9 +287,7 @@ class MemoryEmbeddingRepository:
             index_name = hnsw_index_spec(UUID(snapshot.snapshot_id), snapshot.dimension).name
         except ValueError:
             index_name = "memory-index"
-        completed = replace(
-            snapshot, complete=True, index_name=index_name, index_state="ready"
-        )
+        completed = replace(snapshot, complete=True, index_name=index_name, index_state="ready")
         self.snapshots[snapshot_id] = completed
         return completed
 
@@ -483,9 +479,7 @@ class SqlAlchemyEmbeddingRepository:
                 document_ids=filter.document_ids,
                 candidate_factor=snapshot.candidate_factor,
             )
-            rows = await session.execute(
-                text(spec.sql), {**spec.params, "query": vector_literal}
-            )
+            rows = await session.execute(text(spec.sql), {**spec.params, "query": vector_literal})
             return [(str(chunk_id), float(score)) for chunk_id, score in rows]
 
     @staticmethod

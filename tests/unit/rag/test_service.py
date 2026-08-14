@@ -19,9 +19,7 @@ from ragbench.retrieval.base import SearchFilter, SearchHit
 
 
 class FakeRetriever:
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]:
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
         assert query == "매출은 얼마인가?"
         assert top_k == 2
         assert filter.corpus_snapshot_id == "corpus"
@@ -29,9 +27,7 @@ class FakeRetriever:
 
 
 class FakeEvidenceSource:
-    async def resolve(
-        self, hits: list[SearchHit], *, filter: SearchFilter
-    ) -> list[RetrievedChunk]:
+    async def resolve(self, hits: list[SearchHit], *, filter: SearchFilter) -> list[RetrievedChunk]:
         assert [hit.chunk_id for hit in hits] == ["chunk-1"]
         assert filter.embedding_snapshot_id == "embed"
         return [
@@ -95,9 +91,7 @@ def test_rag_config_copies_and_freezes_provider_parameters() -> None:
 @pytest.mark.asyncio
 async def test_answer_uses_gateway_and_returns_auditable_contract() -> None:
     """Catch direct HTTP generation or loss of usage/config/provenance evidence."""
-    gateway = FakeGateway(
-        '{"answer":"100억 원","citations":["C1"],"abstained":false}'
-    )
+    gateway = FakeGateway('{"answer":"100억 원","citations":["C1"],"abstained":false}')
     service = RagService(FakeRetriever(), FakeEvidenceSource(), gateway)
 
     result = await service.answer("매출은 얼마인가?", _config())
@@ -145,15 +139,14 @@ async def test_unanswerable_v3_response_returns_clean_abstention() -> None:
 @pytest.mark.asyncio
 async def test_missing_resolved_evidence_fails_closed_before_generation() -> None:
     """Catch generating from an incomplete or silently dropped retrieval evidence set."""
+
     class MissingEvidenceSource:
         async def resolve(
             self, hits: list[SearchHit], *, filter: SearchFilter
         ) -> list[RetrievedChunk]:
             return []
 
-    gateway = FakeGateway(
-        '{"answer":"답","citations":["C1"],"abstained":false}'
-    )
+    gateway = FakeGateway('{"answer":"답","citations":["C1"],"abstained":false}')
 
     with pytest.raises(ValueError, match="exactly match"):
         await RagService(FakeRetriever(), MissingEvidenceSource(), gateway).answer(
@@ -166,10 +159,9 @@ async def test_missing_resolved_evidence_fails_closed_before_generation() -> Non
 @pytest.mark.asyncio
 async def test_model_cannot_cite_retrieved_but_budget_excluded_chunk() -> None:
     """Catch validating against raw retrieval hits instead of actually included context."""
+
     class TwoHitRetriever:
-        async def search(
-            self, query: str, *, top_k: int, filter: SearchFilter
-        ) -> list[SearchHit]:
+        async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
             return [
                 SearchHit("chunk-1", 0.9, 1, "dense"),
                 SearchHit("chunk-2", 0.8, 2, "dense"),
@@ -180,17 +172,11 @@ async def test_model_cannot_cite_retrieved_but_budget_excluded_chunk() -> None:
             self, hits: list[SearchHit], *, filter: SearchFilter
         ) -> list[RetrievedChunk]:
             return [
-                RetrievedChunk(
-                    hits[0], "doc-1", "문서", 1, 1, ("첫째",), "첫 번째 근거"
-                ),
-                RetrievedChunk(
-                    hits[1], "doc-1", "문서", 2, 2, ("둘째",), "두 번째 근거"
-                ),
+                RetrievedChunk(hits[0], "doc-1", "문서", 1, 1, ("첫째",), "첫 번째 근거"),
+                RetrievedChunk(hits[1], "doc-1", "문서", 2, 2, ("둘째",), "두 번째 근거"),
             ]
 
-    gateway = FakeGateway(
-        '{"answer":"답","citations":["C2"],"abstained":false}'
-    )
+    gateway = FakeGateway('{"answer":"답","citations":["C2"],"abstained":false}')
     first = RetrievedChunk(
         SearchHit("chunk-1", 0.9, 1, "dense"),
         "doc-1",

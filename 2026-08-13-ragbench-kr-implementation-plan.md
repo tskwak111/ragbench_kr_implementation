@@ -162,6 +162,7 @@ class Usage:
     billable_pages: int
     estimated_cost_usd: Decimal
 
+
 @dataclass(frozen=True)
 class ChunkRecord:
     chunk_id: str
@@ -175,6 +176,7 @@ class ChunkRecord:
     strategy: str
     ordinal: int
 
+
 @dataclass(frozen=True)
 class SearchHit:
     chunk_id: str
@@ -182,16 +184,21 @@ class SearchHit:
     rank: int
     retriever: str
 
+
 class Retriever(Protocol):
     async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]: ...
+
 
 class ProviderGateway(Protocol):
     async def parse(self, request: ParseRequest) -> ParsedDocument: ...
     async def embed(self, request: EmbedRequest) -> EmbedResponse: ...
     async def generate(self, request: GenerateRequest) -> GenerateResponse: ...
 
+
 class ExperimentRunner:
-    async def run(self, config: ExperimentConfig, question_ids: Sequence[str]) -> ExperimentSummary: ...
+    async def run(
+        self, config: ExperimentConfig, question_ids: Sequence[str]
+    ) -> ExperimentSummary: ...
 ```
 
 ## 5. Implementation Tasks

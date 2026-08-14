@@ -15,9 +15,7 @@ class RecordingRetriever:
         self.calls: list[tuple[str, int, SearchFilter]] = []
         self.filter_objects: list[SearchFilter] = []
 
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]:
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
         self.calls.append((query, top_k, filter))
         self.filter_objects.append(filter)
         return [

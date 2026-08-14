@@ -219,12 +219,8 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
 
     @gold.command("verify")
     def gold_verify(
-        sealed_path: Annotated[
-            Path, typer.Argument(help="Restricted sealed gold JSONL path.")
-        ],
-        metadata_path: Annotated[
-            Path, typer.Argument(help="Public gold metadata JSON path.")
-        ],
+        sealed_path: Annotated[Path, typer.Argument(help="Restricted sealed gold JSONL path.")],
+        metadata_path: Annotated[Path, typer.Argument(help="Public gold metadata JSON path.")],
         execute: bool = typer.Option(
             False, help="Explicitly authorize a sealed integrity check; never previews content."
         ),
@@ -233,9 +229,7 @@ def build_app(services: CommandServices | None = None) -> typer.Typer:
         """Verify a sealed gold snapshot while emitting public metadata only."""
         try:
             authorization = authorize_gold_access(command="evaluate-gold", explicit=execute)
-            metadata = GoldMetadata.model_validate_json(
-                metadata_path.read_text(encoding="utf-8")
-            )
+            metadata = GoldMetadata.model_validate_json(metadata_path.read_text(encoding="utf-8"))
             load_sealed_gold(
                 sealed_path,
                 metadata=metadata,
@@ -361,9 +355,7 @@ def _smoke_request(
     else:  # pragma: no cover - private fixed command registration
         raise ValueError(f"unknown smoke operation: {operation}")
     net = services.price_book.estimate(pricing)
-    return request, (net * services.settings.billing_cost_multiplier).quantize(
-        Decimal("0.000001")
-    )
+    return request, (net * services.settings.billing_cost_multiplier).quantize(Decimal("0.000001"))
 
 
 def _execution_blockers(services: CommandServices, approve: bool) -> list[str]:

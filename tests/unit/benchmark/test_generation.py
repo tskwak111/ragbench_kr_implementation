@@ -48,17 +48,13 @@ def _windows() -> tuple[SourceWindow, ...]:
             page_start=page,
             page_end=page,
             chunk_ids=(f"chunk-{doc}-{page}",),
-            content=(
-                f"문서 {doc}의 {page}페이지 근거입니다. "
-                f"매출은 {doc * 100 + page}원입니다."
-            ),
+            content=(f"문서 {doc}의 {page}페이지 근거입니다. 매출은 {doc * 100 + page}원입니다."),
             source_units=(
                 SourceUnit(
                     page=page,
                     chunk_id=f"chunk-{doc}-{page}",
                     content=(
-                        f"문서 {doc}의 {page}페이지 근거입니다. "
-                        f"매출은 {doc * 100 + page}원입니다."
+                        f"문서 {doc}의 {page}페이지 근거입니다. 매출은 {doc * 100 + page}원입니다."
                     ),
                 ),
             ),
@@ -156,9 +152,10 @@ def test_planner_hits_exact_1500_quotas_and_balances_documents_and_pages() -> No
     assert max(doc_counts.values()) - min(doc_counts.values()) <= 1
     assert max(page_counts.values()) <= 30
     assert {job.window.page_start for job in plan.jobs} == set(range(1, 11))
-    assert plan.plan_hash == planner.plan(
-        _windows(), corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
-    ).plan_hash
+    assert (
+        plan.plan_hash
+        == planner.plan(_windows(), corpus_snapshot_id="corpus-v1", model_id="solar-pro3").plan_hash
+    )
 
 
 def test_planner_rejects_unbounded_or_insufficient_sources() -> None:
@@ -174,9 +171,9 @@ def test_planner_rejects_unbounded_or_insufficient_sources() -> None:
 
 def test_execution_requires_live_paid_plan_price_and_budget_gates() -> None:
     """Catch one-switch provider execution, stale pricing, plan drift, or overspend."""
-    plan = GenerationPlanner(
-        GenerationConfig(per_document_cap=260, per_page_cap=30)
-    ).plan(_windows(), corpus_snapshot_id="corpus-v1", model_id="solar-pro3")
+    plan = GenerationPlanner(GenerationConfig(per_document_cap=260, per_page_cap=30)).plan(
+        _windows(), corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
+    )
     fresh = PriceBook(
         {
             "schema_version": "prices-v1",
@@ -209,22 +206,28 @@ def test_execution_requires_live_paid_plan_price_and_budget_gates() -> None:
     assert blockers == ("paid generation requires explicit price confirmation",)
 
     authorized = GenerationAuthorization(True, True, True, plan.plan_hash)
-    assert generation_execution_blockers(
-        plan,
-        authorization=authorized,
-        price_book=fresh,
-        projected_cost_usd=Decimal("2"),
-        remaining_budget_usd=Decimal("10"),
-        now=datetime(2026, 8, 14, 1, tzinfo=UTC),
-    ) == ()
-    assert "remaining budget" in generation_execution_blockers(
-        plan,
-        authorization=authorized,
-        price_book=fresh,
-        projected_cost_usd=Decimal("10"),
-        remaining_budget_usd=Decimal("10"),
-        now=datetime(2026, 8, 14, 1, tzinfo=UTC),
-    )[0]
+    assert (
+        generation_execution_blockers(
+            plan,
+            authorization=authorized,
+            price_book=fresh,
+            projected_cost_usd=Decimal("2"),
+            remaining_budget_usd=Decimal("10"),
+            now=datetime(2026, 8, 14, 1, tzinfo=UTC),
+        )
+        == ()
+    )
+    assert (
+        "remaining budget"
+        in generation_execution_blockers(
+            plan,
+            authorization=authorized,
+            price_book=fresh,
+            projected_cost_usd=Decimal("10"),
+            remaining_budget_usd=Decimal("10"),
+            now=datetime(2026, 8, 14, 1, tzinfo=UTC),
+        )[0]
+    )
 
 
 class _FakeGateway:
@@ -411,9 +414,7 @@ def test_replacement_plan_refills_only_quota_deficits_with_new_global_ids() -> N
         batch_size=2,
     )
     planner = GenerationPlanner(config)
-    initial = planner.plan(
-        _windows()[:3], corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
-    )
+    initial = planner.plan(_windows()[:3], corpus_snapshot_id="corpus-v1", model_id="solar-pro3")
     replacement = planner.plan_replacements(
         initial,
         accepted_counts={QuestionType.FACT: 1, QuestionType.UNANSWERABLE: 1},
@@ -434,9 +435,7 @@ def test_replacement_plans_preserve_campaign_caps_and_campaign_confirmation_iden
         batch_size=1,
     )
     planner = GenerationPlanner(config)
-    initial = planner.plan(
-        (_windows()[0],), corpus_snapshot_id="corpus-v1", model_id="solar-pro3"
-    )
+    initial = planner.plan((_windows()[0],), corpus_snapshot_id="corpus-v1", model_id="solar-pro3")
     replacement = planner.plan_replacements(
         initial,
         accepted_counts={},
@@ -451,12 +450,8 @@ def test_replacement_plans_preserve_campaign_caps_and_campaign_confirmation_iden
             prior_plans=(initial, replacement),
         )
 
-    first = generation_campaign_hash(
-        initial, max_replacement_rounds=1, allow_reduced_scope=False
-    )
-    second = generation_campaign_hash(
-        initial, max_replacement_rounds=2, allow_reduced_scope=False
-    )
+    first = generation_campaign_hash(initial, max_replacement_rounds=1, allow_reduced_scope=False)
+    second = generation_campaign_hash(initial, max_replacement_rounds=2, allow_reduced_scope=False)
     assert first != second
 
 

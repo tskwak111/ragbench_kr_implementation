@@ -214,10 +214,7 @@ async def test_judge_record_preserves_fallback_policy_justifications() -> None:
     )
     result = await JudgeRunner(gateway).evaluate(_judge_input(), config)
     assert result.same_model_unavailability_reason == "no distinct model is deployed"
-    assert (
-        result.temperature_unsupported_reason
-        == "provider model has no temperature parameter"
-    )
+    assert result.temperature_unsupported_reason == "provider model has no temperature parameter"
 
 
 def test_same_judge_and_generator_requires_unavailability_reason() -> None:
@@ -316,10 +313,7 @@ def test_calibration_rejects_too_few_or_nonhuman_labels() -> None:
     pair = CalibrationPair("r1", "fact", 1.0, 1.0, "human-a", True)
     with pytest.raises(ValueError, match="100"):
         calibrate_judge((pair,), binary_threshold=0.5)
-    fake = tuple(
-        CalibrationPair(f"r{i}", "fact", 1.0, 1.0, "synthetic", False)
-        for i in range(100)
-    )
+    fake = tuple(CalibrationPair(f"r{i}", "fact", 1.0, 1.0, "synthetic", False) for i in range(100))
     with pytest.raises(ValueError, match="real human"):
         calibrate_judge(fake, binary_threshold=0.5)
 

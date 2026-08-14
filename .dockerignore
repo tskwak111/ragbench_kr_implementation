@@ -1,0 +1,10 @@
+.env
+.git
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+.worktrees
+.ragbench
+__pycache__
+data/raw

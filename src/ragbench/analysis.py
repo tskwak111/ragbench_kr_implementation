@@ -72,7 +72,13 @@ class AnalysisResult(_FrozenModel):
     latency_ms: int = Field(ge=0)
 
     @field_validator(
-        "correctness", "faithfulness", "citation", "abstention", "hit", "recall", "mrr",
+        "correctness",
+        "faithfulness",
+        "citation",
+        "abstention",
+        "hit",
+        "recall",
+        "mrr",
         mode="before",
     )
     @classmethod
@@ -164,8 +170,7 @@ class AnalysisBundle(_FrozenModel):
             for experiment_id in experiment_ids
         }
         if any(
-            cohort != question_cohorts[experiment_ids[0]]
-            for cohort in question_cohorts.values()
+            cohort != question_cohorts[experiment_ids[0]] for cohort in question_cohorts.values()
         ):
             raise ValueError("experiments do not share the exact question cohort")
         question_types: dict[str, str] = {}
@@ -174,14 +179,19 @@ class AnalysisBundle(_FrozenModel):
             if existing_type != result.question_type:
                 raise ValueError("question type changed within the exact question cohort")
         for usage in self.usage:
-            if usage.question_id is not None and (
-                usage.experiment_id,
-                usage.question_id,
-            ) not in result_keys:
+            if (
+                usage.question_id is not None
+                and (
+                    usage.experiment_id,
+                    usage.question_id,
+                )
+                not in result_keys
+            ):
                 raise ValueError("usage is outside the exact question cohort")
-            if usage.question_id is not None and usage.question_type != question_types[
-                usage.question_id
-            ]:
+            if (
+                usage.question_id is not None
+                and usage.question_type != question_types[usage.question_id]
+            ):
                 raise ValueError("usage question type does not match its bound result")
         for failure in self.failures:
             if (failure.experiment_id, failure.question_id) not in result_keys:
@@ -301,9 +311,7 @@ def plan_failure_sample(
                     "question": row.question_id,
                 }
             ),
-            public_config_id=_public_config_id(
-                public_salt, configs[row.experiment_id].config_hash
-            ),
+            public_config_id=_public_config_id(public_salt, configs[row.experiment_id].config_hash),
             question_type=row.question_type,
             primary=row.primary,
             secondary=row.secondary,
@@ -353,9 +361,7 @@ def build_cost_rows(
             ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         rows.append(
             CostRow(
-                public_config_id=_public_config_id(
-                    public_salt, configs[experiment_id].config_hash
-                ),
+                public_config_id=_public_config_id(public_salt, configs[experiment_id].config_hash),
                 operation=operation,
                 model_id=model_id,
                 question_type=question_type,
@@ -378,9 +384,7 @@ def build_cost_rows(
         delta_usd=(
             None
             if console_gross_usd is None
-            else (console_gross_usd - local_gross).quantize(
-                MONEY_QUANTUM, rounding=ROUND_HALF_UP
-            )
+            else (console_gross_usd - local_gross).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         ),
     )
     return tuple(rows), reconciliation
@@ -538,9 +542,7 @@ def _build_tables(
         )
     parse_pairs = _paired_parse_rows(bundle, request.public_salt)
     chunk_heatmap = _aggregate_axes(bundle, request.public_salt, ("chunk_strategy", "parse_mode"))
-    retriever_by_type = _aggregate_axes(
-        bundle, request.public_salt, ("retriever", "question_type")
-    )
+    retriever_by_type = _aggregate_axes(bundle, request.public_salt, ("retriever", "question_type"))
     top_k = _aggregate_axes(bundle, request.public_salt, ("top_k",))
     prompt = _aggregate_axes(bundle, request.public_salt, ("prompt_version",))
     latency = _latency_rows(bundle, request.public_salt)
@@ -600,9 +602,7 @@ def _paired_parse_rows(bundle: AnalysisBundle, salt: str) -> list[dict[str, Any]
             config.model_id,
         )
         grouped[binding_key][config.parse_mode] = config.experiment_id
-    result_lookup = {
-        (row.experiment_id, row.question_id): row for row in bundle.results
-    }
+    result_lookup = {(row.experiment_id, row.question_id): row for row in bundle.results}
     output: list[dict[str, Any]] = []
     for pair_key, pair in sorted(grouped.items()):
         if set(pair) != {"standard", "enhanced"}:
@@ -654,8 +654,7 @@ def _aggregate_axes(
     for row in bundle.results:
         config = configs[row.experiment_id]
         values = tuple(
-            row.question_type if axis == "question_type" else getattr(config, axis)
-            for axis in axes
+            row.question_type if axis == "question_type" else getattr(config, axis) for axis in axes
         )
         grouped[values].append(row)
     return [
@@ -744,12 +743,8 @@ def _marginal_rows(pareto_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, A
     for row in frontier:
         quality = Decimal(str(row["quality"]))
         cost = Decimal(str(row["gross_cost_usd"]))
-        delta_quality = (
-            None if baseline is None else quality - Decimal(str(baseline["quality"]))
-        )
-        delta_cost = (
-            None if baseline is None else cost - Decimal(str(baseline["gross_cost_usd"]))
-        )
+        delta_quality = None if baseline is None else quality - Decimal(str(baseline["quality"]))
+        delta_cost = None if baseline is None else cost - Decimal(str(baseline["gross_cost_usd"]))
         output.append(
             {
                 "public_config_id": row["public_config_id"],
@@ -759,9 +754,7 @@ def _marginal_rows(pareto_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, A
                 "gross_cost_usd": cost,
                 "quality": quality,
                 "delta_cost_usd": delta_cost,
-                "delta_quality_points": (
-                    None if delta_quality is None else delta_quality * 100
-                ),
+                "delta_quality_points": (None if delta_quality is None else delta_quality * 100),
                 "marginal_cost_per_quality_point_usd": (
                     None
                     if delta_quality is None or delta_cost is None or delta_quality <= 0
@@ -803,9 +796,11 @@ def _percentile(values: Sequence[int], quantile: Decimal) -> Decimal:
     position = (len(ordered) - 1) * float(quantile)
     lower = math.floor(position)
     upper = math.ceil(position)
-    value = ordered[lower] if lower == upper else ordered[lower] + (
-        ordered[upper] - ordered[lower]
-    ) * (position - lower)
+    value = (
+        ordered[lower]
+        if lower == upper
+        else ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+    )
     return Decimal(str(value)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
 
 
@@ -832,9 +827,7 @@ def _exclusive_descriptor(directory_fd: int, name: str) -> int:
     )
 
 
-def _write_csv_at(
-    directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]
-) -> None:
+def _write_csv_at(directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]) -> None:
     if not rows:
         raise ValueError(f"table {name} cannot be empty")
     fields = tuple(rows[0])
@@ -848,12 +841,8 @@ def _write_csv_at(
         os.fsync(stream.fileno())
 
 
-def _write_parquet_at(
-    directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]
-) -> None:
-    normalized = [
-        {key: _normalize_cell(value) for key, value in row.items()} for row in rows
-    ]
+def _write_parquet_at(directory_fd: int, name: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    normalized = [{key: _normalize_cell(value) for key, value in row.items()} for row in rows]
     table = pa.Table.from_pylist(normalized)
     descriptor = _exclusive_descriptor(directory_fd, name)
     with os.fdopen(descriptor, "wb") as stream:
@@ -953,7 +942,7 @@ def _write_figure_at(
             f'<rect x="{x:.2f}" y="{y}" width="{width:.2f}" height="16" '
             f'fill="{colors[measures.index(measure) % len(colors)]}"/>'
             f'<text x="{origin + width + 5:.2f}" y="{y + 12}" font-size="9">'
-            f'{html.escape(measure)} {value:.4g}</text>'
+            f"{html.escape(measure)} {value:.4g}</text>"
         )
     height = 108 + 24 * (len(bars) + int(signed))
     if signed:
@@ -997,7 +986,7 @@ def _render_heatmap(
             f'<rect x="{180 + x_index * 180}" y="{80 + y_index * 55}" width="170" '
             f'height="45" fill="rgb({blue},{blue},245)"/>'
             f'<text x="{188 + x_index * 180}" y="{108 + y_index * 55}" font-size="11">'
-            f'{value:.4g}</text>'
+            f"{value:.4g}</text>"
         )
     labels = [
         f'<text x="{188 + index * 180}" y="70" font-size="10">{html.escape(value)}</text>'
@@ -1035,13 +1024,10 @@ def _render_scatter(
         for x, y in ordered
     ]
     line_points = " ".join(
-        f'{80 + 620 * x / max_x:.2f},{340 - 260 * (y - min_y) / span_y:.2f}'
-        for x, y in ordered
+        f"{80 + 620 * x / max_x:.2f},{340 - 260 * (y - min_y) / span_y:.2f}" for x, y in ordered
     )
     points.append(f'<polyline points="{line_points}" fill="none" stroke="#355c7d"/>')
-    return _render_svg_document(
-        title, ",".join(measures), "scatter", axis_label, points, 780, 390
-    )
+    return _render_svg_document(title, ",".join(measures), "scatter", axis_label, points, 780, 390)
 
 
 def _render_dual_axis(
@@ -1059,8 +1045,8 @@ def _render_dual_axis(
         minimum, maximum = min(values), max(values)
         span = maximum - minimum or 1
         points = " ".join(
-            f'{80 + index * (600 / max(1, len(values) - 1)):.2f},'
-            f'{330 - 240 * (value - minimum) / span:.2f}'
+            f"{80 + index * (600 / max(1, len(values) - 1)):.2f},"
+            f"{330 - 240 * (value - minimum) / span:.2f}"
             for index, value in enumerate(values)
         )
         paths.append(
@@ -1068,9 +1054,7 @@ def _render_dual_axis(
             f'stroke-width="3"/><text x="610" y="{35 + measure_index * 16}" '
             f'fill="{colors[measure_index]}" font-size="10">{html.escape(measure)}</text>'
         )
-    return _render_svg_document(
-        title, ",".join(measures), "dual-axis", axis_label, paths, 780, 380
-    )
+    return _render_svg_document(title, ",".join(measures), "dual-axis", axis_label, paths, 780, 380)
 
 
 def _render_svg_document(

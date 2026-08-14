@@ -55,9 +55,7 @@ async def test_dense_retriever_rejects_invalid_top_k_before_embedding() -> None:
     retriever = DenseRetriever(embeddings, FakeSearchRepository(), token_counter=lambda _: 1)
 
     with pytest.raises(ValueError, match="positive"):
-        await retriever.search(
-            "질문", top_k=0, filter=SearchFilter("c", "p", "s", "e")
-        )
+        await retriever.search("질문", top_k=0, filter=SearchFilter("c", "p", "s", "e"))
 
     assert embeddings.calls == []
 

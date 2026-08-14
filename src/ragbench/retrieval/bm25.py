@@ -71,14 +71,10 @@ class BM25Retriever:
             term for tokens in self._tokens for term in set(tokens)
         )
         self._average_length = (
-            sum(len(tokens) for tokens in self._tokens) / len(self._tokens)
-            if self._tokens
-            else 0.0
+            sum(len(tokens) for tokens in self._tokens) / len(self._tokens) if self._tokens else 0.0
         )
 
-    async def search(
-        self, query: str, *, top_k: int, filter: SearchFilter
-    ) -> list[SearchHit]:
+    async def search(self, query: str, *, top_k: int, filter: SearchFilter) -> list[SearchHit]:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         if filter != self._snapshot.search_filter and (
@@ -110,9 +106,7 @@ class BM25Retriever:
                     1 + (row_count - document_frequency + 0.5) / (document_frequency + 0.5)
                 )
                 length_ratio = len(tokens) / self._average_length
-                denominator = term_frequency + self._k1 * (
-                    1 - self._b + self._b * length_ratio
-                )
+                denominator = term_frequency + self._k1 * (1 - self._b + self._b * length_ratio)
                 score += inverse_document_frequency * (
                     term_frequency * (self._k1 + 1) / denominator
                 )

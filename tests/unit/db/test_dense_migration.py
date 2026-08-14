@@ -13,10 +13,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 def _migration_sql(direction: str) -> str:
     command = [sys.executable, "-m", "alembic", direction]
-    command += ["20260814_0003:20260814_0004", "--sql"] if direction == "upgrade" else [
-        "20260814_0004:20260814_0003",
-        "--sql",
-    ]
+    command += (
+        ["20260814_0003:20260814_0004", "--sql"]
+        if direction == "upgrade"
+        else [
+            "20260814_0004:20260814_0003",
+            "--sql",
+        ]
+    )
     return subprocess.run(
         command, cwd=PROJECT_ROOT, check=True, capture_output=True, text=True
     ).stdout

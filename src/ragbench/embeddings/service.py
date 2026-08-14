@@ -70,8 +70,7 @@ class EmbeddingService:
             await self._repository.persist_batch(
                 snapshot.snapshot_id,
                 tuple(
-                    (chunk.chunk_id, vector)
-                    for chunk, vector in zip(batch, vectors, strict=True)
+                    (chunk.chunk_id, vector) for chunk, vector in zip(batch, vectors, strict=True)
                 ),
             )
         return await self._repository.finalize_snapshot(snapshot.snapshot_id)

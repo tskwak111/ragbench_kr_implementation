@@ -195,8 +195,7 @@ class ChunkEmbedding(Base):
         ),
         CheckConstraint("vector_dims(embedding) = dimension", name="chunk_embedding_dimension"),
         CheckConstraint(
-            "vector_norm(embedding) > 0 AND "
-            "vector_norm(embedding) < 'Infinity'::float8",
+            "vector_norm(embedding) > 0 AND vector_norm(embedding) < 'Infinity'::float8",
             name="chunk_embedding_finite_nonzero",
         ),
         UniqueConstraint(
@@ -285,9 +284,7 @@ class RetrievalResult(Base):
             "(legacy_chunk_id IS NULL AND embedding_snapshot_id IS NOT NULL))",
             name="retrieval_result_exactly_one_evidence_mode",
         ),
-        ForeignKeyConstraint(
-            ["legacy_chunk_id"], ["chunk.id"], ondelete="RESTRICT"
-        ),
+        ForeignKeyConstraint(["legacy_chunk_id"], ["chunk.id"], ondelete="RESTRICT"),
         ForeignKeyConstraint(
             ["embedding_snapshot_id", "chunk_id"],
             ["chunk_artifact.embedding_snapshot_id", "chunk_artifact.chunk_id"],
