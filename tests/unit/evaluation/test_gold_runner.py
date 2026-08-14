@@ -12,6 +12,7 @@ from ragbench.benchmark.splits import GoldItem
 from ragbench.core.hashing import canonical_json_hash
 from ragbench.evaluation.gold import (
     BootstrapSpec,
+    ExecutorSpec,
     GoldCohort,
     GoldEvaluationResult,
     GoldMetric,
@@ -24,10 +25,15 @@ from ragbench.evaluation.gold import (
     append_invalidation,
     build_gold_dry_run,
 )
+from ragbench.experiments.runner import ExperimentConfig
 
 
-def _prereg() -> PreregistrationEnvelope:
-    hashes = ("a" * 64, "b" * 64, "c" * 64)
+def _prereg(configs: tuple[ExperimentConfig, ...] | None = None) -> PreregistrationEnvelope:
+    hashes = (
+        tuple(config.semantic_hash for config in configs)
+        if configs is not None
+        else ("a" * 64, "b" * 64, "c" * 64)
+    )
     registration = GoldPreregistration(
         schema_version="sealed-gold-preregistration-v1",
         config_hashes=hashes,
@@ -54,11 +60,15 @@ def _prereg() -> PreregistrationEnvelope:
             ),
         ),
         code_commit="5421abd",
+        executor=ExecutorSpec(
+            entrypoint="ragbench.evaluation.test_adapter:execute",
+            source_sha256="4" * 64,
+        ),
     )
     return PreregistrationEnvelope.sign(
         registration,
         signed_by="owner",
-        signature="detached:test",
+        signing_key=b"owner-test-signing-key",
         signed_at=datetime(2026, 8, 14, tzinfo=UTC),
     )
 
@@ -73,6 +83,7 @@ def _items() -> tuple[GoldItem, ...]:
             question_type="fact" if index % 2 == 0 else "table",
             difficulty="medium",
             answerable=True,
+            document_cluster_id=f"private-document-{index // 10}",
         )
         for index in reversed(range(150))
     )
@@ -114,34 +125,52 @@ def test_runner_uses_same_sorted_cohort_for_all_configs_and_resumes_idempotently
 ) -> None:
     calls: list[tuple[str, str]] = []
 
-    async def execute(config_hash: str, item: GoldItem) -> GoldEvaluationResult:
+    async def execute(config: ExperimentConfig, item: GoldItem) -> GoldEvaluationResult:
+        config_hash = config.semantic_hash
         calls.append((config_hash, item.item_id))
         return _result(config_hash, item)
 
     repository = GoldResultRepository(tmp_path / "protected")
     runner = GoldRunner(repository, execute)
-    first = asyncio.run(runner.run(_prereg(), _items()))
+    configs = _runner_configs(tmp_path)
+    envelope = _prereg(configs)
+    first = asyncio.run(runner.run(envelope, configs, _items()))
     assert first.completed == 450
     expected_ids = tuple(f"restricted-{index:03d}" for index in range(150))
-    for config_hash in _prereg().preregistration.config_hashes:
+    for config_hash in envelope.preregistration.config_hashes:
         assert tuple(item_id for config, item_id in calls if config == config_hash) == expected_ids
 
     calls.clear()
-    resumed = asyncio.run(runner.run(_prereg(), _items(), resume=True))
+    resumed = asyncio.run(runner.run(envelope, configs, _items(), resume=True))
     assert resumed.completed == 450
     assert calls == []
     assert stat.S_IMODE((tmp_path / "protected").stat().st_mode) == 0o700
 
 
 def test_runner_rejects_wrong_cohort_or_result_identity_without_saving(tmp_path: Path) -> None:
-    async def wrong(config_hash: str, item: GoldItem) -> GoldEvaluationResult:
-        return _result(config_hash, item).model_copy(update={"item_id": "other"})
+    async def wrong(config: ExperimentConfig, item: GoldItem) -> GoldEvaluationResult:
+        return _result(config.semantic_hash, item).model_copy(update={"item_id": "other"})
 
     runner = GoldRunner(GoldResultRepository(tmp_path / "protected"), wrong)
     with pytest.raises(ValueError, match="ordered cohort"):
-        asyncio.run(runner.run(_prereg(), _items()[:-1]))
+        configs = _runner_configs(tmp_path)
+        asyncio.run(runner.run(_prereg(configs), configs, _items()[:-1]))
     with pytest.raises(ValueError, match="wrong identity"):
-        asyncio.run(runner.run(_prereg(), _items()))
+        configs = _runner_configs(tmp_path)
+        asyncio.run(runner.run(_prereg(configs), configs, _items()))
+
+
+def test_runner_rejects_executor_controlled_type_or_cluster(tmp_path: Path) -> None:
+    async def wrong_type(config: ExperimentConfig, item: GoldItem) -> GoldEvaluationResult:
+        return _result(config.semantic_hash, item).model_copy(update={"question_type": "injected"})
+
+    with pytest.raises(ValueError, match="stratum"):
+        configs = _runner_configs(tmp_path)
+        asyncio.run(
+            GoldRunner(GoldResultRepository(tmp_path / "protected"), wrong_type).run(
+                _prereg(configs), configs, _items()
+            )
+        )
 
 
 def test_aggregate_is_paired_overall_and_by_type_and_public_safe(tmp_path: Path) -> None:
@@ -200,3 +229,65 @@ def test_checkpoint_tampering_and_preregistration_rebinding_are_rejected(tmp_pat
     rebound = envelope.model_copy(update={"artifact_sha256": "9" * 64})
     with pytest.raises(ValueError, match="hash mismatch"):
         repository.assert_bound(rebound)
+
+
+def test_aggregation_rejects_symlinked_or_misnamed_checkpoint(tmp_path: Path) -> None:
+    repository = GoldResultRepository(tmp_path / "protected")
+    envelope = _prereg()
+    items = tuple(sorted(_items(), key=lambda item: item.item_id))
+    repository.initialize(envelope, items)
+    result = _result(envelope.preregistration.config_hashes[0], items[0])
+    repository.save(result)
+    result_path = next((tmp_path / "protected" / "results").glob("*/*.json"))
+    moved = tmp_path / "moved.json"
+    result_path.rename(moved)
+    result_path.symlink_to(moved)
+    with pytest.raises(ValueError, match="unsafe"):
+        repository.all_results()
+
+
+def _runner_configs(tmp_path: Path) -> tuple[ExperimentConfig, ...]:
+    def config(suffix: str) -> ExperimentConfig:
+        return ExperimentConfig.model_validate(
+            {
+                "schema_version": "generation-experiment-v1",
+                "name": f"gold-{suffix}",
+                "snapshots": {
+                    "corpus": "corpus-a",
+                    "parse": "parse-a",
+                    "chunks": "chunks-a",
+                    "embeddings": "embeddings-a",
+                    "questions": "dev-a",
+                },
+                "retrieval": {"config_hash": suffix * 64, "top_k": 5},
+                "generation": {
+                    "provider": "upstage",
+                    "model_alias": "solar-pro3",
+                    "model_id": "solar-pro3-2026-08-01",
+                    "prompt_version": "v3",
+                    "temperature": 0.0,
+                    "max_output_tokens": 512,
+                    "worst_case_input_tokens": 2048,
+                },
+                "evaluation": {
+                    "deterministic_version": "v1",
+                    "judge_model_id": "solar-pro4-2026-08-01",
+                    "judge_prompt_version": "v1",
+                },
+                "runtime": {
+                    "concurrency": 5,
+                    "max_retries": 5,
+                    "seed": 20260813,
+                    "batch_cap": 150,
+                    "budget_cap_usd": "10.00",
+                    "schema_error_rate_stop": 0.25,
+                    "provider_error_rate_stop": 0.5,
+                    "error_window": 4,
+                },
+                "question_ids": [f"placeholder-{index}" for index in range(150)],
+                "output_dir": str(tmp_path / f"runs-{suffix}"),
+                "code_commit": "5421abd",
+            }
+        )
+
+    return tuple(config(value) for value in "abc")

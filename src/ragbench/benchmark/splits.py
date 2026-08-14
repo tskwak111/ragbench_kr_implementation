@@ -109,9 +109,7 @@ class BenchmarkItem(_FrozenModel):
     question_family_id: str = Field(min_length=1)
     paraphrase_group_id: str = Field(min_length=1)
 
-    @field_validator(
-        "item_id", "natural_question", "question_family_id", "paraphrase_group_id"
-    )
+    @field_validator("item_id", "natural_question", "question_family_id", "paraphrase_group_id")
     @classmethod
     def _benchmark_field_not_blank(cls, value: str) -> str:
         if not value.strip():
@@ -189,6 +187,7 @@ class GoldItem(_FrozenModel):
     question_type: str = Field(min_length=1)
     difficulty: str = Field(min_length=1)
     answerable: bool
+    document_cluster_id: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _answerability_is_consistent(self) -> Self:
@@ -521,9 +520,7 @@ def load_sealed_gold(
         raise ImmutableSnapshotError("sealed gold hash mismatch")
     try:
         parsed = tuple(
-            GoldItem.model_validate_json(line)
-            for line in payload.splitlines()
-            if line.strip()
+            GoldItem.model_validate_json(line) for line in payload.splitlines() if line.strip()
         )
     except (ValueError, UnicodeError):
         raise ImmutableSnapshotError("sealed gold payload is invalid") from None

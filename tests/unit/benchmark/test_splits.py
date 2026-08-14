@@ -202,9 +202,7 @@ def test_split_components_prevent_document_family_and_paraphrase_leakage() -> No
         seed=19,
     )
     assignment = {
-        item_id: name
-        for name, snapshot in snapshots.items()
-        for item_id in snapshot.item_ids
+        item_id: name for name, snapshot in snapshots.items() for item_id in snapshot.item_ids
     }
 
     assert set(snapshots) == {SnapshotName.DEV_AUTO, SnapshotName.TEST_GOLD, SnapshotName.STRESS}
@@ -219,8 +217,7 @@ def test_split_components_prevent_document_family_and_paraphrase_leakage() -> No
         for snapshot in snapshots.values()
     )
     assert all(
-        len(str(snapshot.model_dump()["membership_hash"])) == 64
-        for snapshot in snapshots.values()
+        len(str(snapshot.model_dump()["membership_hash"])) == 64 for snapshot in snapshots.values()
     )
     with pytest.raises(ValidationError, match="frozen"):
         snapshots[SnapshotName.DEV_AUTO].seed = 20  # type: ignore[misc]
@@ -278,9 +275,7 @@ def test_double_review_reports_raw_agreement_and_cohens_kappa() -> None:
             second = first
         else:
             second = (
-                ReviewDecision.REJECT
-                if first is ReviewDecision.ACCEPT
-                else ReviewDecision.ACCEPT
+                ReviewDecision.REJECT if first is ReviewDecision.ACCEPT else ReviewDecision.ACCEPT
             )
         reviews.extend((_review(index, "reviewer-a", first), _review(index, "reviewer-b", second)))
 
@@ -338,6 +333,7 @@ def _gold_items(count: int) -> tuple[GoldItem, ...]:
             question_type="fact",
             difficulty="medium",
             answerable=True,
+            document_cluster_id=f"document-{index // 10}",
         )
         for index in range(count)
     )
@@ -477,9 +473,7 @@ def test_gold_loader_revalidates_metadata_identity_and_scope(
 ) -> None:
     """Catch coordinated content-hash metadata edits bypassing the sealed snapshot identity."""
     gold_path = tmp_path / "gold.jsonl"
-    metadata = seal_gold(
-        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
-    )
+    metadata = seal_gold(_gold_items(150), gold_path, version="v1", quality_threshold_met=False)
     raw = gold_path.read_text(encoding="utf-8").replace("합성 답변 0", "변조된 답변", 1)
     gold_path.write_text(raw, encoding="utf-8")
     gold_path.chmod(0o600)
@@ -502,9 +496,7 @@ def test_invalid_gold_schema_does_not_chain_restricted_input(
 ) -> None:
     """Catch validation tracebacks retaining restricted question or item input."""
     gold_path = tmp_path / "gold.jsonl"
-    metadata = seal_gold(
-        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
-    )
+    metadata = seal_gold(_gold_items(150), gold_path, version="v1", quality_threshold_met=False)
     malformed = gold_path.read_text(encoding="utf-8").replace(
         '"item_id":"gold-000"', '"item_id":123', 1
     )
@@ -562,17 +554,13 @@ def test_gold_cli_requires_execute_and_environment_without_reading_contents(
 ) -> None:
     """Catch CLI path or inherited environment bypassing either explicit gold gate."""
     gold_path = tmp_path / "sealed.jsonl"
-    metadata = seal_gold(
-        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
-    )
+    metadata = seal_gold(_gold_items(150), gold_path, version="v1", quality_threshold_met=False)
     metadata_path = tmp_path / "metadata.json"
     metadata_path.write_text(metadata.model_dump_json(), encoding="utf-8")
     monkeypatch.delenv("ALLOW_GOLD_ACCESS", raising=False)
     app = build_app()
 
-    no_flag = RUNNER.invoke(
-        app, ["gold", "verify", str(gold_path), str(metadata_path), "--json"]
-    )
+    no_flag = RUNNER.invoke(app, ["gold", "verify", str(gold_path), str(metadata_path), "--json"])
     no_environment = RUNNER.invoke(
         app,
         ["gold", "verify", str(gold_path), str(metadata_path), "--execute", "--json"],
@@ -589,9 +577,7 @@ def test_gold_cli_success_emits_only_public_metadata(
 ) -> None:
     """Catch a successful integrity check previewing IDs, questions, answers, or evidence."""
     gold_path = tmp_path / "sealed.jsonl"
-    metadata = seal_gold(
-        _gold_items(150), gold_path, version="v1", quality_threshold_met=False
-    )
+    metadata = seal_gold(_gold_items(150), gold_path, version="v1", quality_threshold_met=False)
     metadata_path = tmp_path / "metadata.json"
     metadata_path.write_text(metadata.model_dump_json(), encoding="utf-8")
     monkeypatch.setenv("ALLOW_GOLD_ACCESS", "1")

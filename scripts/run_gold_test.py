@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import importlib
+import inspect
 import json
+import os
 from pathlib import Path
+from typing import cast
 
 from ragbench.benchmark.splits import GoldMetadata
 from ragbench.evaluation.gold import (
@@ -19,9 +24,12 @@ from ragbench.evaluation.gold import (
     load_authorized_gold_cohort,
     load_preregistration,
     verify_frozen_inputs,
+    verify_runtime_code_commit,
     write_public_gold_report,
 )
 from ragbench.experiments.runner import ExperimentConfig
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -41,7 +49,8 @@ def _parse_args() -> argparse.Namespace:
 def _load_and_verify(
     args: argparse.Namespace,
 ) -> tuple[PreregistrationEnvelope, tuple[ExperimentConfig, ...], GoldMetadata]:
-    envelope = load_preregistration(args.preregistration)
+    signing_key = os.environ.get("RAGBENCH_PREREGISTRATION_SIGNING_KEY", "").encode()
+    envelope = load_preregistration(args.preregistration, signing_key=signing_key)
     configs = tuple(ExperimentConfig.from_yaml(path) for path in args.configs)
     try:
         metadata = GoldMetadata.model_validate_json(args.metadata.read_text(encoding="utf-8"))
@@ -52,11 +61,6 @@ def _load_and_verify(
 
 
 def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> int:
-    if args.execute and executor is None:
-        raise RuntimeError(
-            "gold execution requires the application executor; this CLI does not construct "
-            "provider calls directly"
-        )
     envelope, configs, metadata = _load_and_verify(args)
     if not args.execute:
         plan = build_gold_dry_run(envelope)
@@ -64,8 +68,9 @@ def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> i
         return 0
     if args.gold is None:
         raise ValueError("--gold is required only with --execute")
-    if executor is None:  # guarded before loading any artifacts; narrows for mypy
-        raise AssertionError("unreachable missing gold executor")
+    verify_runtime_code_commit(PROJECT_ROOT, envelope.preregistration)
+    if executor is None:
+        executor = _load_executor(envelope)
     items = load_authorized_gold_cohort(
         args.gold,
         metadata=metadata,
@@ -74,7 +79,9 @@ def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> i
         explicit=True,
     )
     repository = GoldResultRepository(args.output)
-    summary = asyncio.run(GoldRunner(repository, executor).run(envelope, items, resume=args.resume))
+    summary = asyncio.run(
+        GoldRunner(repository, executor).run(envelope, configs, items, resume=args.resume)
+    )
     if args.public_report is not None:
         if not args.public_export_salt:
             raise ValueError("--public-export-salt is required with --public-report")
@@ -89,6 +96,22 @@ def _run(args: argparse.Namespace, *, executor: GoldExecutor | None = None) -> i
         )
     )
     return 0
+
+
+def _load_executor(envelope: PreregistrationEnvelope) -> GoldExecutor:
+    """Load only the exact source-hashed adapter frozen in preregistration."""
+    module_name, function_name = envelope.preregistration.executor.entrypoint.split(":", 1)
+    module = importlib.import_module(module_name)
+    function = getattr(module, function_name, None)
+    if not callable(function) or not inspect.iscoroutinefunction(function):
+        raise RuntimeError("preregistered gold executor is not an async callable")
+    source_path = inspect.getsourcefile(function)
+    if source_path is None:
+        raise RuntimeError("preregistered gold executor source is unavailable")
+    actual_hash = hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+    if actual_hash != envelope.preregistration.executor.source_sha256:
+        raise RuntimeError("preregistered gold executor source hash mismatch")
+    return cast(GoldExecutor, function)
 
 
 def main() -> None:

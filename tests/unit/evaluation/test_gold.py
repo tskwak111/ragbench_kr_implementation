@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from ragbench.benchmark.splits import GoldMetadata
 from ragbench.evaluation.gold import (
     BootstrapSpec,
+    ExecutorSpec,
     GoldCohort,
     GoldMetric,
     GoldPreregistration,
@@ -105,6 +106,10 @@ def _preregistration(configs: tuple[ExperimentConfig, ...]) -> GoldPreregistrati
             ordered_membership_hash="3" * 64,
         ),
         code_commit="5421abd",
+        executor=ExecutorSpec(
+            entrypoint="ragbench.evaluation.test_adapter:execute",
+            source_sha256="4" * 64,
+        ),
     )
 
 
@@ -144,26 +149,29 @@ def test_signed_preregistration_is_exclusive_hash_bound_and_detects_tampering(
         path,
         _preregistration(configs),
         signed_by="benchmark-owner",
-        signature="ed25519:test-fixture-detached-signature",
+        signing_key=b"owner-test-signing-key",
         signed_at=datetime(2026, 8, 14, tzinfo=UTC),
     )
 
-    assert load_preregistration(path) == envelope
+    assert load_preregistration(path, signing_key=b"owner-test-signing-key") == envelope
     assert len(envelope.artifact_sha256) == 64
     with pytest.raises(FileExistsError):
         write_preregistration(
             path,
             _preregistration(configs),
             signed_by="benchmark-owner",
-            signature="ed25519:test-fixture-detached-signature",
+            signing_key=b"owner-test-signing-key",
             signed_at=datetime(2026, 8, 14, tzinfo=UTC),
         )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["preregistration"]["stopping_rule"] = "changed after signing"
+    from ragbench.core.hashing import canonical_json_hash
+
+    payload["artifact_sha256"] = canonical_json_hash(payload["preregistration"])
     path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        load_preregistration(path)
+    with pytest.raises(ValueError, match="signature"):
+        load_preregistration(path, signing_key=b"owner-test-signing-key")
 
 
 def test_frozen_inputs_reject_config_order_substitution_mutation_and_cohort_change(
@@ -174,7 +182,7 @@ def test_frozen_inputs_reject_config_order_substitution_mutation_and_cohort_chan
     envelope = PreregistrationEnvelope.sign(
         prereg,
         signed_by="owner",
-        signature="detached:test",
+        signing_key=b"owner-test-signing-key",
         signed_at=datetime(2026, 8, 14, tzinfo=UTC),
     )
     verified = verify_frozen_inputs(envelope, configs=configs, metadata=_metadata())
@@ -192,6 +200,10 @@ def test_frozen_inputs_reject_config_order_substitution_mutation_and_cohort_chan
     changed_metadata = _metadata().model_copy(update={"content_sha256": "9" * 64})
     with pytest.raises(ValueError, match="cohort"):
         verify_frozen_inputs(envelope, configs=configs, metadata=changed_metadata)
+
+    changed_code = tuple(config.model_copy(update={"code_commit": "fffffff"}) for config in configs)
+    with pytest.raises(ValueError, match="code commit"):
+        verify_frozen_inputs(envelope, configs=changed_code, metadata=_metadata())
 
 
 def test_optional_solar_comparison_is_fixed_budgeted_and_after_core_only() -> None:

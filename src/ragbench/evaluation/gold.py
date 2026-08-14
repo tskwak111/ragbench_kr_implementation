@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
@@ -67,6 +70,11 @@ class GoldCohort(_FrozenModel):
     ordered_membership_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class ExecutorSpec(_FrozenModel):
+    entrypoint: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class SolarExploratorySpec(_FrozenModel):
     """Optional comparison that cannot run until the core gold result is complete."""
 
@@ -106,6 +114,7 @@ class GoldPreregistration(_FrozenModel):
     stopping_rule: str = Field(min_length=1)
     cohort: GoldCohort
     code_commit: str = Field(pattern=r"^[0-9a-f]{7,40}$")
+    executor: ExecutorSpec
     exploratory_comparison: SolarExploratorySpec | None = None
 
     @field_validator("config_hashes")
@@ -165,7 +174,7 @@ class PreregistrationEnvelope(_FrozenModel):
     preregistration: GoldPreregistration
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     signed_by: str = Field(min_length=1)
-    signature: str = Field(min_length=1)
+    signature: str = Field(pattern=r"^[0-9a-f]{64}$")
     signed_at: datetime
 
     @field_validator("signed_by", "signature")
@@ -188,12 +197,16 @@ class PreregistrationEnvelope(_FrozenModel):
         preregistration: GoldPreregistration,
         *,
         signed_by: str,
-        signature: str,
+        signing_key: bytes,
         signed_at: datetime,
     ) -> Self:
+        if not signing_key:
+            raise ValueError("preregistration signing key cannot be empty")
+        artifact_hash = canonical_json_hash(preregistration.model_dump(mode="json"))
+        signature = hmac.new(signing_key, artifact_hash.encode("ascii"), hashlib.sha256).hexdigest()
         return cls(
             preregistration=preregistration,
-            artifact_sha256=canonical_json_hash(preregistration.model_dump(mode="json")),
+            artifact_sha256=artifact_hash,
             signed_by=signed_by,
             signature=signature,
             signed_at=signed_at,
@@ -365,7 +378,7 @@ class GoldResultRepository:
             if existing != manifest:
                 raise ValueError("protected gold manifest does not match preregistration")
             return
-        _write_private_exclusive_json(path, manifest.model_dump(mode="json"))
+        _write_private_atomic_exclusive_json(path, manifest.model_dump(mode="json"))
 
     def save(self, result: GoldEvaluationResult) -> None:
         manifest = self._manifest()
@@ -395,6 +408,8 @@ class GoldResultRepository:
         for config_hash in manifest.config_hashes:
             root = self.root / "results" / canonical_json_hash(config_hash)
             for path in sorted(root.glob("*.json")):
+                if path.is_symlink() or not path.is_file() or stat_mode(path) != 0o600:
+                    raise ValueError("protected gold checkpoint is unsafe")
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                     result = self._decode_result(payload, manifest)
@@ -402,14 +417,26 @@ class GoldResultRepository:
                     raise ValueError("protected gold checkpoint is invalid") from error
                 if result.config_hash != config_hash:
                     raise ValueError("protected gold checkpoint identity mismatch")
+                if path.name != f"{canonical_json_hash(result.item_id)}.json":
+                    raise ValueError("protected gold checkpoint filename identity mismatch")
                 results.append(result)
         return tuple(results)
 
     def invalidations(self) -> tuple[InvalidationRecord, ...]:
-        return tuple(
-            InvalidationRecord.model_validate_json(path.read_text(encoding="utf-8"))
-            for path in sorted((self.root / "invalidations").glob("*.json"))
-        )
+        records: list[InvalidationRecord] = []
+        for path in sorted((self.root / "invalidations").glob("*.json")):
+            if path.is_symlink() or not path.is_file() or stat_mode(path) != 0o600:
+                raise ValueError("protected gold invalidation is unsafe")
+            try:
+                record = InvalidationRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValidationError) as error:
+                raise ValueError("protected gold invalidation is invalid") from error
+            if path.name != f"{record.sequence:04d}.json":
+                raise ValueError("protected gold invalidation sequence mismatch")
+            records.append(record)
+        if tuple(record.sequence for record in records) != tuple(range(1, len(records) + 1)):
+            raise ValueError("protected gold invalidation lineage is not contiguous")
+        return tuple(records)
 
     @property
     def preregistration_hash(self) -> str:
@@ -423,7 +450,7 @@ class GoldResultRepository:
             raise ValueError("invalidation sequence must be contiguous and append-only")
         if record.preregistration_hash != self._manifest().preregistration_hash:
             raise ValueError("invalidation does not belong to this preregistration")
-        _write_private_exclusive_json(
+        _write_private_atomic_exclusive_json(
             path,
             record.model_dump(mode="json"),
         )
@@ -483,7 +510,7 @@ class GoldResultRepository:
         return GoldEvaluationResult.model_validate(payload["result"])
 
 
-GoldExecutor = Callable[[str, GoldItem], Awaitable[GoldEvaluationResult]]
+GoldExecutor = Callable[[ExperimentConfig, GoldItem], Awaitable[GoldEvaluationResult]]
 
 
 class GoldRunner:
@@ -496,11 +523,17 @@ class GoldRunner:
     async def run(
         self,
         envelope: PreregistrationEnvelope,
+        configs: Sequence[ExperimentConfig],
         items: Sequence[GoldItem],
         *,
         resume: bool = False,
     ) -> GoldRunSummary:
         ordered = tuple(sorted(items, key=lambda item: _item_id(item)))
+        config_by_hash = {config.semantic_hash: config for config in configs}
+        if tuple(config_by_hash) != envelope.preregistration.config_hashes:
+            raise ValueError("gold runner configs differ from preregistered order")
+        if any(config.code_commit != envelope.preregistration.code_commit for config in configs):
+            raise ValueError("gold runner code commit differs from preregistration")
         self._repository.initialize(envelope, ordered)
         completed = 0
         for config_hash in envelope.preregistration.config_hashes:
@@ -512,9 +545,14 @@ class GoldRunner:
                         raise FileExistsError("gold checkpoint exists; explicit resume is required")
                     completed += 1
                     continue
-                result = await self._execute(config_hash, item)
+                result = await self._execute(config_by_hash[config_hash], item)
                 if result.config_hash != config_hash or result.item_id != item_id:
                     raise ValueError("gold executor returned the wrong identity")
+                if (
+                    result.question_type != item.question_type
+                    or result.document_cluster_id != item.document_cluster_id
+                ):
+                    raise ValueError("gold executor returned a mismatched immutable stratum")
                 self._repository.save(result)
                 completed += 1
         expected = envelope.preregistration.cohort.item_count * 3
@@ -727,17 +765,6 @@ def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
 
 
-def _write_private_exclusive_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(payload, stream, ensure_ascii=False, allow_nan=False, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
 def _write_private_atomic_exclusive_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
@@ -763,38 +790,21 @@ def write_preregistration(
     preregistration: GoldPreregistration,
     *,
     signed_by: str,
-    signature: str,
+    signing_key: bytes,
     signed_at: datetime,
 ) -> PreregistrationEnvelope:
     """Publish a signed preregistration once; mutation is detected on every load."""
     envelope = PreregistrationEnvelope.sign(
         preregistration,
         signed_by=signed_by,
-        signature=signature,
+        signing_key=signing_key,
         signed_at=signed_at,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(
-                envelope.model_dump(mode="json"),
-                stream,
-                ensure_ascii=False,
-                allow_nan=False,
-                sort_keys=True,
-            )
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    _write_private_atomic_exclusive_json(path, envelope.model_dump(mode="json"))
     return envelope
 
 
-def load_preregistration(path: Path) -> PreregistrationEnvelope:
+def load_preregistration(path: Path, *, signing_key: bytes) -> PreregistrationEnvelope:
     try:
         envelope = PreregistrationEnvelope.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError) as error:
@@ -802,6 +812,13 @@ def load_preregistration(path: Path) -> PreregistrationEnvelope:
     actual = canonical_json_hash(envelope.preregistration.model_dump(mode="json"))
     if actual != envelope.artifact_sha256:
         raise ValueError("preregistration artifact hash mismatch")
+    if not signing_key:
+        raise ValueError("preregistration signing key cannot be empty")
+    expected_signature = hmac.new(
+        signing_key, envelope.artifact_sha256.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(envelope.signature, expected_signature):
+        raise ValueError("preregistration signature verification failed")
     return envelope
 
 
@@ -813,6 +830,8 @@ def verify_frozen_inputs(
 ) -> VerifiedGoldInputs:
     """Verify configs and public-safe cohort metadata without reading sealed content."""
     expected = envelope.preregistration.config_hashes
+    if any(config.code_commit != envelope.preregistration.code_commit for config in configs):
+        raise ValueError("config code commit differs from preregistration")
     actual = tuple(config.semantic_hash for config in configs)
     if actual != expected:
         if len(actual) == 3 and set(actual) == set(expected):
@@ -830,6 +849,31 @@ def verify_frozen_inputs(
         config_hashes=(expected[0], expected[1], expected[2]),
         cohort=cohort,
     )
+
+
+def verify_runtime_code_commit(project_root: Path, preregistration: GoldPreregistration) -> None:
+    """Bind a live unseal to the exact clean Git commit frozen before gold access."""
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("cannot verify preregistered runtime code commit") from error
+    if completed.stdout:
+        raise RuntimeError("gold execution requires a clean tracked worktree")
+    if not commit.startswith(preregistration.code_commit):
+        raise RuntimeError("runtime code commit differs from preregistration")
 
 
 def load_authorized_gold_cohort(
