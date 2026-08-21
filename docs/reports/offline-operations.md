@@ -13,9 +13,11 @@ This report covers the remaining work that can be completed without an external 
 - Redistribution: all records are conservatively marked `nonredistributable`
 - Structural checks: PDF magic, strict PDF parse, SHA-256, and declared page counts passed for all 20 files
 - Visual checks: first, middle, and last page of every PDF were rendered and inspected (60 pages total); no broken or unreadable sample was found
-- Freeze gate: an in-memory `frozen` clone passes every automated size, diversity, provenance, and file-integrity gate
+- Freeze gate: the committed `frozen` manifest passes every automated size, diversity, provenance, and file-integrity gate
 
-The committed manifest remains `draft`. The project requires human source/license/page review before changing that field to `frozen`; automated inspection is not represented as human approval. Raw PDF bytes are deliberately absent from the repository.
+The operator reviewed the 20-document approval packet and approved the complete corpus on
+2026-08-21 for local evaluation with external redistribution prohibited. The committed manifest is
+therefore `frozen`. Raw PDF bytes remain deliberately absent from the repository.
 
 ## PostgreSQL and pgvector
 
@@ -49,7 +51,8 @@ The Standard parse dry-run completed without a provider call:
 - base cost: USD 19.810000
 - VAT-buffered worst case: USD 21.791000
 - remaining configured budget: USD 113.209000
-- plan hash: `beafc28b8a07c88d937d82c6a237eef50408ab1d98c878c79e9bba290f6ed6b2`
+- frozen-corpus plan hash: `646ee61eeb9369ab8286c41a57bd7b38c0194889b45b13937cf16bb0e12ab5b8`
+- model evidence label: `document-parse@2026-08-21`
 - price snapshot hash: `e68984ea05ccc439a6f2f6da71f63279a606f5441dc752feb004aec1c9791bc5`
 
 Enhanced dry-run correctly refuses to proceed until successful Standard checkpoints exist. Because provider parsing is excluded, real parsed checkpoints, chunks, embeddings, and corpus-backed retrieval experiments cannot be produced honestly.
@@ -63,7 +66,6 @@ These are framework smoke results only, not real-corpus benchmark scores.
 
 ## Remaining external gates
 
-- Human review of source selection, licensing, and rendered pages before corpus freeze
 - Provider-backed Standard and Enhanced parsing
 - Provider-backed document/query embeddings
 - Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts

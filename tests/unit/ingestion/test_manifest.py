@@ -207,15 +207,13 @@ def test_public_export_excludes_local_paths_and_document_bytes(tmp_path: Path) -
     assert "document_bytes" not in exported["documents"][0]
 
 
-def test_operational_manifest_is_populated_draft_and_cannot_freeze_without_review() -> None:
+def test_approved_operational_manifest_is_populated_and_frozen() -> None:
     manifest_path = Path(__file__).parents[3] / "configs" / "corpus.yaml"
     manifest = CorpusManifest.load(manifest_path)
 
     assert len(manifest.documents) == 20
     assert sum(document.page_count for document in manifest.documents) == 1_981
-    assert manifest.public_export()["status"] == "draft"
-    with pytest.raises(CorpusManifestValidationError, match="human review"):
-        manifest.validate(freeze=True)
+    assert manifest.public_export()["status"] == "frozen"
 
 
 def test_frozen_status_runs_freeze_validation_without_an_explicit_flag(tmp_path: Path) -> None:

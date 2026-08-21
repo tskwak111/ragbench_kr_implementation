@@ -6,10 +6,10 @@ retrieval-augmented generation. It is an experiment platform, not a general-purp
 ## Key Results
 
 **No benchmark result is published yet.** The software framework, no-cost public fixture, and a
-local-only draft corpus manifest are implemented. Human corpus approval and freeze, dual paid
-parsing, embedding, human validation, sealed-gold execution, and billing reconciliation remain
-operationally pending. Consequently, this repository does not claim that one parser, chunker,
-retriever, prompt, or Solar model is better than another.
+local-only frozen corpus manifest are implemented. Dual paid parsing, embedding, benchmark human
+validation, sealed-gold execution, and billing reconciliation remain operationally pending.
+Consequently, this repository does not claim that one parser, chunker, retriever, prompt, or Solar
+model is better than another.
 
 The small offline fixture is a reproduction smoke test only. Its perfect deterministic scores are
 constructed expectations and are not research evidence.
@@ -45,11 +45,11 @@ paid network request.
 ## Dataset
 
 The target is 20–30 Korean corporate/public long documents totaling 1,500–2,000 pages, balanced
-across text-heavy and table-heavy material. The committed draft manifest records 20 locally
-acquired documents totaling 1,981 pages, but it is **not human-approved or frozen**. Raw files
-remain private and ignored by Git. The manifest records source URL, download date, SHA-256, page
-count, license/redistribution status, and inclusion rationale. Every current record is conservatively
-nonredistributable, and document bytes are never part of public exports.
+across text-heavy and table-heavy material. The committed frozen manifest records 20 locally
+acquired documents totaling 1,981 pages. A human reviewer approved the source, metadata, rendered
+page samples, local evaluation use, and no-redistribution restriction on 2026-08-21. Raw files
+remain private and ignored by Git. Every current record is conservatively nonredistributable, and
+document bytes are never part of public exports.
 
 The only committed document content is a two-chunk synthetic fixture under `tests/fixtures/`. It
 exists to prove that a fresh environment can retrieve, cite, score, and cache a tiny run without a
@@ -157,8 +157,8 @@ content-addressed artifact and creates no duplicate response file.
 
 ## Limitations
 
-- The real corpus, dual parses, 14 chunk snapshots, embedding indexes, and synthetic benchmark are
-  pending operator work and provider approval.
+- Dual parses, 14 chunk snapshots, embedding indexes, and the synthetic benchmark are pending
+  provider execution and downstream review.
 - PostgreSQL/pgvector integration and container startup require Docker; environments without it can
   run only the offline fixture and static/unit gates.
 - Current provider model IDs and prices must be reverified before every paid batch.

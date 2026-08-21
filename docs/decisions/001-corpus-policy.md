@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; the populated local corpus manifest remains a draft pending human approval.
+Accepted; the populated local corpus was human-approved and frozen on 2026-08-21.
 
 ## Decision
 
@@ -16,4 +16,4 @@ The snapshot ID is a SHA-256 hash of canonical, sorted content hashes and stable
 
 ## Consequences
 
-Twenty local documents have been acquired and pass the automated integrity, page-count, size, and diversity checks. Their metadata is committed while the nonredistributable PDF bytes remain local. The repository does not claim human source/license/page approval or a frozen corpus snapshot until an authorized reviewer completes that gate.
+Twenty local documents pass the automated integrity, page-count, size, and diversity checks. A human reviewer approved the source, metadata, rendered first/middle/final page samples, local evaluation use, and no-redistribution restriction on 2026-08-21. Their frozen metadata is committed while the nonredistributable PDF bytes remain local.
