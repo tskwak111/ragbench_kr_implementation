@@ -35,14 +35,13 @@ plan-confirmation rejection, provider/local page reconciliation, partial batch f
 duplicate invocation, corrupt cache recovery, Standard/Enhanced parity, CLI live gates, and the
 offline migration contract.
 
-## Deliberately pending operations
+## Live Standard update — 2026-08-22
 
-No real Standard or Enhanced batch was executed. The repository still contains an empty draft
-corpus manifest, and no live or paid authorization was supplied. Consequently this task does not
-claim the planned 95% page-success gate, repaired/excluded effective corpus, 30-pair stratified
-manual QA, or provider-console charge reconciliation. Those remain explicit operator steps after a
-real corpus is frozen and a fresh dry-run plan is reviewed and exactly confirmed. Enhanced must be
-run only after the Standard success/effective-corpus decision is recorded consistently.
+The approved frozen corpus was parsed in Standard mode: 20/20 documents and 1,981/1,981 pages
+succeeded with resolved model `document-parse-260630`, for USD 21.791000 recorded gross cost and no
+open reservations. PDFs over the synchronous 100-page limit are split into at most 100-page calls
+and merged with global page and element IDs. Enhanced execution, 30-pair manual QA, and
+provider-console charge reconciliation remain pending.
 
 ## Verification
 

@@ -678,6 +678,46 @@ class ParserPipeline:
             tuple(failures),
         )
 
+    async def reconcile_paid_checkpoint(
+        self, snapshot_id: str, document_id: str, mode: str
+    ) -> ParseCheckpoint:
+        snapshot = self._snapshot(snapshot_id)
+        try:
+            document = next(item for item in snapshot.documents if item.document_id == document_id)
+        except StopIteration as error:
+            raise ParseIntegrityError(f"unknown corpus document: {document_id}") from error
+        selected_mode = _mode(mode)
+        checkpoint = await self._repository.get(
+            snapshot_id,
+            document.sha256,
+            selected_mode,
+            self._model_id,
+            self._model_version,
+        )
+        if (
+            checkpoint is None
+            or checkpoint.status != "reconciliation_required"
+            or checkpoint.raw_response is None
+            or checkpoint.raw_response_hash is None
+        ):
+            raise ParseIntegrityError(
+                "no paid reconciliation checkpoint matches the approved model"
+            )
+        if canonical_json_hash(checkpoint.raw_response) != checkpoint.raw_response_hash:
+            raise ParseIntegrityError("paid reconciliation response hash is invalid")
+        reconciled = self._normalize(
+            snapshot,
+            document,
+            selected_mode,
+            checkpoint.raw_response,
+            checkpoint.correlation_id,
+            checkpoint.latency_ms,
+        )
+        if reconciled.cost_usd != checkpoint.cost_usd:
+            raise ParseIntegrityError("paid reconciliation cost differs from recorded evidence")
+        await self._repository.put(reconciled)
+        return reconciled
+
     async def _require_standard_parity(self, snapshot: CorpusSnapshot) -> None:
         for document in snapshot.documents:
             standard = await self._repository.get(

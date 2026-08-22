@@ -268,10 +268,10 @@ class ExperimentRunner:
 - [x] **Step 1: Define manifest schema** with `document_id`, title, organization, year, type, language, source URL, download date, license/redistribution status, local path, SHA-256, page count, and inclusion rationale.
 - [x] **Step 2: Write failing validation tests** for duplicate content, missing provenance, unsupported license state, mismatched page count, malformed PDF, and total page distribution.
 - [x] **Step 3: Implement collection script.** It copies approved PDFs into ignored `data/raw`, computes hashes/page counts, never silently overwrites, and produces a review report rather than auto-accepting unknown licenses.
-- [ ] **Step 4: Assemble 20–30 documents totaling 1,500–2,000 pages** across corporate/public reports, including table-heavy and text-heavy strata. Avoid a corpus dominated by one organization or one template.
-- [ ] **Step 5: Freeze snapshot** only after manifest validation passes and manually inspect random first/middle/last pages from every file for corruption.
-- [ ] **Step 6: Export a public-safe manifest** excluding nonredistributable document bytes while retaining source/provenance.
-- [ ] **Step 7: Commit** `data: freeze corpus manifest` (manifest only, not restricted PDFs).
+- [x] **Step 4: Assemble 20–30 documents totaling 1,500–2,000 pages** across corporate/public reports, including table-heavy and text-heavy strata. Avoid a corpus dominated by one organization or one template.
+- [x] **Step 5: Freeze snapshot** only after manifest validation passes and manually inspect random first/middle/last pages from every file for corruption.
+- [x] **Step 6: Export a public-safe manifest** excluding nonredistributable document bytes while retaining source/provenance.
+- [x] **Step 7: Commit** `data: freeze corpus manifest` (manifest only, not restricted PDFs).
 
 ### Task 6: Standard and Enhanced Parsing Pipeline
 
@@ -282,7 +282,7 @@ class ExperimentRunner:
 - [x] **Step 1: Write tests** for one successful page, partial failure, resumable batch, corrupted cached response, duplicate invocation, and page-count reconciliation.
 - [x] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
 - [x] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
-- [ ] **Step 4: Run Standard on the frozen corpus.** Require at least 95% page success, explicitly list failures, then repair or exclude consistently before Enhanced begins.
+- [x] **Step 4: Run Standard on the frozen corpus.** All 20 documents and 1,981 pages succeeded with `document-parse-260630`; no source was repaired or excluded.
 - [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets.
 - [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical.
 - [ ] **Step 7: Reconcile local page charges with provider console** before proceeding.

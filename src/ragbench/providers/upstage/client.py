@@ -5,17 +5,20 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
+from io import BytesIO
 from random import uniform
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import httpx
+from pypdf import PdfReader, PdfWriter
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,6 +40,7 @@ from ragbench.providers.upstage.pricing import PriceBook, PricingRequest
 
 LOGGER = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = "provider-cache-v2"
+MAX_SYNC_PARSE_PAGES = 100
 
 
 class ProviderHTTPError(RuntimeError):
@@ -451,6 +455,8 @@ class UpstageGateway(ProviderGateway):
             )
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
+        if request.billable_pages > MAX_SYNC_PARSE_PAGES:
+            return await self._parse_large_document(request)
         _reject_reserved_params(
             request.provider_params,
             {"model", "document", "mode", "output_formats"},
@@ -524,6 +530,24 @@ class UpstageGateway(ProviderGateway):
             )
             await self._store.put(key, operation="parse", model_id=request.model_id, response=raw)
             return ParsedDocument(result.raw_response, str(correlation_id))
+
+    async def _parse_large_document(self, request: ParseRequest) -> ParsedDocument:
+        responses: list[tuple[int, int, ParsedDocument]] = []
+        for start_page, page_count, content in _pdf_chunks(request):
+            response = await self.parse(
+                ParseRequest(
+                    model_id=request.model_id,
+                    document_sha256=hashlib.sha256(content).hexdigest(),
+                    content=content,
+                    billable_pages=page_count,
+                    mode=request.mode,
+                    provider_params=request.provider_params,
+                )
+            )
+            responses.append((start_page, page_count, response))
+        raw = _merge_parse_chunks(responses, request.billable_pages)
+        correlation_ids = [item.correlation_id for _, _, item in responses if item.correlation_id]
+        return ParsedDocument(raw, correlation_ids[-1] if correlation_ids else None)
 
     async def _reserve(self, projected: Decimal) -> tuple[UUID, Reservation]:
         correlation_id = uuid4()
@@ -694,6 +718,113 @@ class UpstageGateway(ProviderGateway):
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _pdf_chunks(request: ParseRequest) -> list[tuple[int, int, bytes]]:
+    reader = PdfReader(BytesIO(request.content))
+    if len(reader.pages) != request.billable_pages:
+        raise ValueError("PDF page count differs from declared billable pages")
+    chunks: list[tuple[int, int, bytes]] = []
+    for start in range(0, request.billable_pages, MAX_SYNC_PARSE_PAGES):
+        writer = PdfWriter()
+        end = min(start + MAX_SYNC_PARSE_PAGES, request.billable_pages)
+        for page in reader.pages[start:end]:
+            writer.add_page(page)
+        output = BytesIO()
+        writer.write(output)
+        chunks.append((start, end - start, output.getvalue()))
+    return chunks
+
+
+def _merge_parse_chunks(
+    responses: list[tuple[int, int, ParsedDocument]], total_pages: int
+) -> dict[str, Any]:
+    models = {response.raw_response.get("model") for _, _, response in responses}
+    if len(models) != 1 or not all(isinstance(model, str) and model for model in models):
+        raise ValueError("parse chunks resolved to inconsistent provider models")
+    merged_elements: list[dict[str, Any]] = []
+    merged_pages: list[dict[str, Any]] = []
+    content_parts: dict[str, list[str]] = {"html": [], "markdown": [], "text": []}
+    evidence: list[dict[str, Any]] = []
+    next_element_id = 0
+    for start, page_count, response in responses:
+        raw = response.raw_response
+        element_id_offset = next_element_id
+        chunk_elements = raw.get("elements", [])
+        if not isinstance(chunk_elements, list) or not all(
+            isinstance(item, dict) for item in chunk_elements
+        ):
+            raise ValueError("parse chunk elements are malformed")
+        for source in chunk_elements:
+            item = dict(source)
+            old_id = item.get("id")
+            if old_id is not None and not isinstance(old_id, int):
+                raise ValueError("parse chunk element ID is not numeric")
+            if isinstance(old_id, int):
+                item["id"] = old_id + element_id_offset
+            for key in ("page", "page_number", "source_page"):
+                if isinstance(item.get(key), int):
+                    item[key] += start
+            item_content = item.get("content")
+            if isinstance(item_content, dict):
+                item["content"] = dict(item_content)
+                html = item["content"].get("html")
+                if isinstance(html, str):
+                    item["content"]["html"] = _offset_html_ids(html, element_id_offset)
+            merged_elements.append(item)
+        if merged_elements:
+            numeric_ids = [
+                item["id"] for item in merged_elements if isinstance(item.get("id"), int)
+            ]
+            if numeric_ids:
+                next_element_id = max(numeric_ids) + 1
+        chunk_pages = raw.get("pages", [])
+        if isinstance(chunk_pages, list):
+            for source in chunk_pages:
+                if not isinstance(source, dict):
+                    raise ValueError("parse chunk page metadata is malformed")
+                page = dict(source)
+                for key in ("page", "page_number", "source_page"):
+                    if isinstance(page.get(key), int):
+                        page[key] += start
+                merged_pages.append(page)
+        content = raw.get("content", {})
+        if isinstance(content, dict):
+            for key in ("html", "markdown", "text"):
+                value = content.get(key)
+                if isinstance(value, str) and value:
+                    content_parts[key].append(
+                        _offset_html_ids(value, element_id_offset) if key == "html" else value
+                    )
+        evidence.append(
+            {
+                "start_page": start + 1,
+                "end_page": start + page_count,
+                "response_hash": canonical_json_hash(raw),
+                "correlation_id": response.correlation_id,
+            }
+        )
+    merged: dict[str, Any] = {
+        "model": models.pop(),
+        "content": {
+            key: separator.join(content_parts[key])
+            for key, separator in (("html", "\n"), ("markdown", "\n\n"), ("text", "\n"))
+        },
+        "elements": merged_elements,
+        "usage": {"pages": total_pages},
+        "chunk_evidence": evidence,
+    }
+    if merged_pages:
+        merged["pages"] = merged_pages
+    return merged
+
+
+def _offset_html_ids(html: str, offset: int) -> str:
+    return re.sub(
+        r"\bid=(['\"])(\d+)\1",
+        lambda match: f"id={match.group(1)}{int(match.group(2)) + offset}{match.group(1)}",
+        html,
+    )
 
 
 def _retry_after_seconds(value: str) -> float | None:

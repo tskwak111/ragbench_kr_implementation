@@ -237,13 +237,16 @@ def test_smoke_execute_uses_fake_gateway_once_only_after_all_live_guards() -> No
 
 def test_prices_verify_and_usage_status_are_machine_readable() -> None:
     """Catch leaving Task 3 price verification or budget visibility outside the CLI."""
-    app = build_app(_services())
+    services = _services()
+    app = build_app(services)
 
     prices = RUNNER.invoke(app, ["prices", "verify", "--json"])
     usage = RUNNER.invoke(app, ["usage", "status", "--json"])
 
     assert prices.exit_code == 0
-    assert json.loads(prices.output)["verified_at"] == "2026-08-13T00:00:00Z"
+    assert json.loads(prices.output)[
+        "verified_at"
+    ] == services.price_book.verified_at.isoformat().replace("+00:00", "Z")
     assert usage.exit_code == 0
     assert json.loads(usage.output) == {
         "remaining_usd": "134.500000",
@@ -311,11 +314,12 @@ def test_main_serializes_settings_construction_failure_when_json_requested(
 
 
 def test_main_redacts_missing_key_live_settings_error_as_json(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """Catch RUN_LIVE_UPSTAGE_TESTS validation leaking details before a JSON command starts."""
     monkeypatch.setenv("RUN_LIVE_UPSTAGE_TESTS", "1")
     monkeypatch.delenv("UPSTAGE_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["ragbench", "preflight", "--json"])
 
     with pytest.raises(SystemExit) as exited:

@@ -4,12 +4,14 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from email.utils import format_datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 import respx
+from pypdf import PdfReader, PdfWriter
 
 from ragbench.core.money import BudgetExceededError, BudgetGuard, MemoryBudgetRepository
 from ragbench.providers.upstage.client import (
@@ -322,6 +324,71 @@ async def test_parse_uses_official_document_digitization_multipart_contract() ->
     assert 'name="base64_encoding"' in body and "['table']" in body
     assert 'name="output_formats"' in body
     assert "html" in body and "markdown" in body
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_parse_splits_over_100_pages_and_merges_global_page_evidence() -> None:
+    """Catch sending an oversized PDF or keeping chunk-local page and element IDs."""
+    writer = PdfWriter()
+    for _ in range(101):
+        writer.add_blank_page(width=72, height=72)
+    source = BytesIO()
+    writer.write(source)
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "model": "document-parse-260630",
+                "content": {"markdown": "first", "html": "<p id='0'>first</p>"},
+                "elements": [
+                    {"id": 0, "page": 1, "content": {"html": "<p id='0'>first</p>"}},
+                    {"id": 1, "page": 100, "content": {"html": "<p id='1'>last</p>"}},
+                ],
+                "usage": {"pages": 100},
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "model": "document-parse-260630",
+                "content": {"markdown": "second", "html": "<p id='0'>second</p>"},
+                "elements": [{"id": 0, "page": 1, "content": {"html": "<p id='0'>second</p>"}}],
+                "usage": {"pages": 1},
+            },
+        ),
+    ]
+    route = respx.post(f"{BASE_URL}/document-digitization").mock(side_effect=responses)
+    repository = MemoryBudgetRepository()
+    gateway = _gateway(repository=repository)
+
+    result = await gateway.parse(
+        ParseRequest(
+            model_id="document-parse",
+            document_sha256="7" * 64,
+            content=source.getvalue(),
+            billable_pages=101,
+        )
+    )
+    await gateway.aclose()
+
+    sent_page_counts = []
+    for call in route.calls:
+        body = call.request.content
+        start = body.index(b"%PDF")
+        end = body.index(b"%%EOF", start) + len(b"%%EOF")
+        sent_page_counts.append(len(PdfReader(BytesIO(body[start:end])).pages))
+    assert sent_page_counts == [100, 1]
+    assert [record.usage.billable_pages for record in repository.usages] == [100, 1]
+    assert result.raw_response["model"] == "document-parse-260630"
+    assert result.raw_response["usage"] == {"pages": 101}
+    assert [(item["id"], item["page"]) for item in result.raw_response["elements"]] == [
+        (0, 1),
+        (1, 100),
+        (2, 101),
+    ]
+    assert result.raw_response["content"]["markdown"] == "first\n\nsecond"
+    assert "id='2'" in result.raw_response["content"]["html"]
 
 
 @pytest.mark.parametrize(

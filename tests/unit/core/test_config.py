@@ -11,7 +11,7 @@ def test_offline_settings_allow_missing_upstage_api_key(monkeypatch: pytest.Monk
     monkeypatch.delenv("UPSTAGE_API_KEY", raising=False)
     monkeypatch.delenv("RUN_LIVE_UPSTAGE_TESTS", raising=False)
 
-    assert Settings().upstage_api_key is None
+    assert Settings(_env_file=None).upstage_api_key is None
 
 
 def test_live_settings_require_upstage_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -19,7 +19,7 @@ def test_live_settings_require_upstage_api_key(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("RUN_LIVE_UPSTAGE_TESTS", "1")
 
     with pytest.raises(ValidationError, match="UPSTAGE_API_KEY is required"):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_settings_use_safe_runtime_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,7 +34,7 @@ def test_settings_use_safe_runtime_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     ):
         monkeypatch.delenv(name, raising=False)
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.max_project_budget_usd == Decimal("135.00")
     assert settings.max_concurrency == 5

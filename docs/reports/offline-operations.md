@@ -2,7 +2,8 @@
 
 Date: 2026-08-14 (Asia/Seoul)
 
-This report covers the remaining work that can be completed without an external provider API. It does not claim a provider parse, embedding, generation, judge, gold-set review, or FastAPI deployment run.
+This report originally covered work completed without an external provider API. The Standard parse
+status below was updated after the separately authorized live batch.
 
 ## Corpus
 
@@ -44,18 +45,18 @@ The parity fixture now uses exact tied vector pairs and float32-safe separation.
 
 ## Parse and offline replay
 
-The Standard parse dry-run completed without a provider call:
+The authorized Standard parse completed on 2026-08-22:
 
-- projected calls: 20
-- projected pages: 1,981
-- base cost: USD 19.810000
-- VAT-buffered worst case: USD 21.791000
-- remaining configured budget: USD 113.209000
-- frozen-corpus plan hash: `646ee61eeb9369ab8286c41a57bd7b38c0194889b45b13937cf16bb0e12ab5b8`
-- model evidence label: `document-parse@2026-08-21`
-- price snapshot hash: `e68984ea05ccc439a6f2f6da71f63279a606f5441dc752feb004aec1c9791bc5`
+- successful documents/pages: 20/20 and 1,981/1,981
+- failed documents/pages: 0/0
+- resolved provider model: `document-parse-260630`
+- recorded gross cost: USD 21.791000
+- open budget reservations: 0
+- 11 PDFs over the synchronous 100-page limit were split in memory and merged with global page and element IDs
 
-Enhanced dry-run correctly refuses to proceed until successful Standard checkpoints exist. Because provider parsing is excluded, real parsed checkpoints, chunks, embeddings, and corpus-backed retrieval experiments cannot be produced honestly.
+All 20 responses are resumable cache hits, so a repeated Standard dry-run projects zero new calls
+and zero cost. Enhanced has not been authorized or executed. Parsed checkpoints exist, but paired
+chunking and downstream comparisons still require an identical-corpus Enhanced snapshot.
 
 The public synthetic offline fixtures remain reproducible:
 
@@ -66,10 +67,10 @@ These are framework smoke results only, not real-corpus benchmark scores.
 
 ## Remaining external gates
 
-- Provider-backed Standard and Enhanced parsing
+- Provider-backed Enhanced parsing and paired manual parse QA
 - Provider-backed document/query embeddings
 - Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts
 - Authorized reviewer work for candidate/gold sealing
 - Any live API deployment or HTTP smoke test
 
-No external provider API, paid call, live test, gold data, or private review artifact was accessed during this run.
+Provider-console charge reconciliation, gold data, and private review artifacts remain pending.

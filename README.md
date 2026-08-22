@@ -5,9 +5,9 @@ retrieval-augmented generation. It is an experiment platform, not a general-purp
 
 ## Key Results
 
-**No benchmark result is published yet.** The software framework, no-cost public fixture, and a
-local-only frozen corpus manifest are implemented. Dual paid parsing, embedding, benchmark human
-validation, sealed-gold execution, and billing reconciliation remain operationally pending.
+**No benchmark result is published yet.** The software framework, no-cost public fixture, frozen
+corpus, and Standard parse snapshot are implemented. Enhanced parsing, embedding, benchmark human
+validation, sealed-gold execution, and provider-console billing reconciliation remain pending.
 Consequently, this repository does not claim that one parser, chunker, retriever, prompt, or Solar
 model is better than another.
 
@@ -113,8 +113,9 @@ stratified manual failure reviews in source-to-answer order. See
 
 Money is represented with `Decimal`; integer tokens/pages and configured price snapshots determine
 worst-case reservations. Provider-console billing remains the source of truth and must be
-reconciled before claims. No live Upstage call was made to produce this README or the offline
-fixture. No measured project cost or value ranking is currently published.
+reconciled before claims. The Standard corpus parse recorded USD 21.791 including the configured
+10% VAT buffer; this is an operational ledger value, not a benchmark result or console
+reconciliation.
 
 ## Demo
 

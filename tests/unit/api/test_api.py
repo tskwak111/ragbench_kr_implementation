@@ -189,7 +189,7 @@ def test_migration_readiness_requires_the_exact_repository_head() -> None:
     )
 
 
-def test_default_app_imports_without_key_or_database_and_reports_degraded() -> None:
+def test_default_app_reports_degraded_until_domain_services_are_configured() -> None:
     from ragbench.api.app import app
 
     response = ApiClient(app).get("/health")
@@ -197,7 +197,7 @@ def test_default_app_imports_without_key_or_database_and_reports_degraded() -> N
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
     assert response.json()["ready"] is False
-    assert response.json()["components"]["database"]["ready"] is False
+    assert response.json()["components"]["domain_services"]["ready"] is False
 
 
 def test_document_registration_accepts_metadata_not_local_paths() -> None:

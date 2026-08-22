@@ -110,6 +110,7 @@ def _pipeline(
     *,
     authorization: ParseAuthorization | None = None,
     settled: Decimal = Decimal("5"),
+    model_version: str = "2026-08-01",
 ) -> ParserPipeline:
     return ParserPipeline(
         snapshots={snapshot.snapshot_id: snapshot},
@@ -117,7 +118,7 @@ def _pipeline(
         repository=repository,
         price_book=_prices(),
         model_id="document-parse",
-        model_version="2026-08-01",
+        model_version=model_version,
         hard_budget_usd=Decimal("100"),
         settled_cost_usd=lambda: settled,
         vat_buffer=Decimal("0.10"),
@@ -409,6 +410,37 @@ async def test_paid_schema_failure_preserves_raw_response_and_cost(tmp_path: Pat
     assert checkpoint.correlation_id == "correlation-test"
     assert checkpoint.provider_model_version == "unexpected"
     assert checkpoint.cost_usd == Decimal("0.011000")
+
+
+@pytest.mark.asyncio
+async def test_paid_model_alias_can_be_reconciled_without_another_provider_call(
+    tmp_path: Path,
+) -> None:
+    """Catch re-billing valid raw evidence after an alias resolves to a concrete model."""
+    document = _document(tmp_path, "a", 1)
+    snapshot = CorpusSnapshot("snapshot-1", (document,))
+    repository = MemoryParseRepository()
+    gateway = RecordingGateway([_provider_response(1, model="document-parse-260630")])
+    plan = await _pipeline(snapshot, gateway, repository).plan_corpus("snapshot-1", "standard")
+    failed = await _pipeline(
+        snapshot,
+        gateway,
+        repository,
+        authorization=ParseAuthorization(plan.plan_hash),
+    ).parse_corpus("snapshot-1", "standard")
+    assert failed.failed_documents == 1
+
+    reconciled = await _pipeline(
+        snapshot,
+        gateway,
+        repository,
+        model_version="document-parse-260630",
+    ).reconcile_paid_checkpoint("snapshot-1", document.document_id, "standard")
+
+    assert len(gateway.requests) == 1
+    assert reconciled.status == "succeeded"
+    assert reconciled.provider_model_version == "document-parse-260630"
+    assert reconciled.cache_integrity_ok
 
 
 @pytest.mark.asyncio
