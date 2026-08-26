@@ -15,8 +15,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from ragbench.core.config import Settings
 from ragbench.core.hashing import canonical_json_hash
 from ragbench.core.money import SqlAlchemyBudgetRepository, Usage
+from ragbench.db.session import require_distinct_database
 from ragbench.ingestion.parser import ParseCheckpoint, SqlAlchemyParseRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -29,6 +31,7 @@ def _alembic_config(database_url: str) -> Config:
 
 
 async def _reset_schema(database_url: str) -> None:
+    require_distinct_database(database_url, Settings().database_url)
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
@@ -72,6 +75,23 @@ async def test_configured_database_connection_failures_are_not_skipped(
 
     with pytest.raises(OSError, match="connection refused"):
         await _reset_schema("postgresql+asyncpg://configured.test/ragbench")
+
+
+@pytest.mark.asyncio
+async def test_schema_reset_refuses_the_runtime_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch integration tests deleting paid runtime evidence."""
+    database_url = "postgresql+asyncpg://test:test@localhost/shared"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "create_async_engine",
+        lambda _: (_ for _ in ()).throw(AssertionError("destructive connection opened")),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime database"):
+        await _reset_schema(database_url)
 
 
 def test_offline_downgrade_preserves_shared_vector_extension() -> None:

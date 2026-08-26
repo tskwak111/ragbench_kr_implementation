@@ -3,10 +3,23 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from ragbench.core.config import Settings
+
+
+def require_distinct_database(test_url: str, runtime_url: str) -> None:
+    """Refuse destructive tests against the configured runtime database."""
+
+    def identity(value: str) -> tuple[str | None, int, str | None]:
+        url = make_url(value)
+        host = "loopback" if url.host in {"localhost", "127.0.0.1", "::1"} else url.host
+        return host, url.port or 5432, url.database
+
+    if identity(test_url) == identity(runtime_url):
+        raise RuntimeError("refusing to reset the runtime database")
 
 
 def create_session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:

@@ -13,6 +13,8 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from ragbench.core.config import Settings
+from ragbench.db.session import require_distinct_database
 from ragbench.embeddings.repository import (
     ChunkEmbeddingInput,
     EmbeddingSnapshot,
@@ -36,6 +38,7 @@ def _alembic_config(database_url: str) -> Config:
 
 
 async def _reset_schema(database_url: str) -> None:
+    require_distinct_database(database_url, Settings().database_url)
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:

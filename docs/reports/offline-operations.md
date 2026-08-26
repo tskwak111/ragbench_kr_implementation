@@ -50,13 +50,20 @@ The authorized Standard parse completed on 2026-08-22:
 - successful documents/pages: 20/20 and 1,981/1,981
 - failed documents/pages: 0/0
 - resolved provider model: `document-parse-260630`
-- recorded gross cost: USD 21.791000
+- recorded local gross budget cost: USD 21.791000
 - open budget reservations: 0
 - 11 PDFs over the synchronous 100-page limit were split in memory and merged with global page and element IDs
 
-All 20 responses are resumable cache hits, so a repeated Standard dry-run projects zero new calls
-and zero cost. Enhanced has not been authorized or executed. Parsed checkpoints exist, but paired
-chunking and downstream comparisons still require an identical-corpus Enhanced snapshot.
+Provider-console evidence supplied on 2026-08-26 reports 2,081 Standard pages and USD 20.81 item
+cost/used credit: 283 pages on 2026-08-21 and 1,798 pages on 2026-08-22. This is 100 pages and USD
+1.00 above the successful corpus. The difference is consistent with the initial oversized-request
+failure, but the console export does not identify the exact request, so the discrepancy remains
+open.
+
+On 2026-08-24 the local parse checkpoints were deleted when integration tests reset the same
+database used for runtime evidence. No file cache or backup exists. Runtime and integration test
+databases are now separated and destructive integration resets refuse the configured runtime
+database. Standard must be reconstructed with a separately approved rerun before manual QA.
 
 The public synthetic offline fixtures remain reproducible:
 
@@ -67,10 +74,10 @@ These are framework smoke results only, not real-corpus benchmark scores.
 
 ## Remaining external gates
 
-- Provider-backed Enhanced parsing and paired manual parse QA
+- Standard checkpoint reconstruction, Enhanced parsing, and paired manual parse QA
 - Provider-backed document/query embeddings
 - Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts
 - Authorized reviewer work for candidate/gold sealing
 - Any live API deployment or HTTP smoke test
 
-Provider-console charge reconciliation, gold data, and private review artifacts remain pending.
+The 100-page console discrepancy, gold data, and private review artifacts remain pending.

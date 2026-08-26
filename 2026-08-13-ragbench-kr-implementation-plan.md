@@ -282,7 +282,7 @@ class ExperimentRunner:
 - [x] **Step 1: Write tests** for one successful page, partial failure, resumable batch, corrupted cached response, duplicate invocation, and page-count reconciliation.
 - [x] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
 - [x] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
-- [x] **Step 4: Run Standard on the frozen corpus.** All 20 documents and 1,981 pages succeeded with `document-parse-260630`; no source was repaired or excluded.
+- [x] **Step 4: Run Standard on the frozen corpus.** All 20 documents and 1,981 pages succeeded with `document-parse-260630`; no source was repaired or excluded. The deleted local checkpoints must be reconstructed before Step 6.
 - [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets.
 - [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical.
 - [ ] **Step 7: Reconcile local page charges with provider console** before proceeding.

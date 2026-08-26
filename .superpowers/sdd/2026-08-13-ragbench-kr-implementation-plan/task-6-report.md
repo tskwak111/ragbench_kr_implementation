@@ -43,6 +43,11 @@ open reservations. PDFs over the synchronous 100-page limit are split into at mo
 and merged with global page and element IDs. Enhanced execution, 30-pair manual QA, and
 provider-console charge reconciliation remain pending.
 
+Console evidence supplied on 2026-08-26 reports 2,081 pages and USD 20.81 used credit, leaving a
+100-page discrepancy against the successful corpus. The local checkpoints were subsequently lost
+because integration tests reset the runtime database. Runtime and test databases are now isolated;
+a separately approved Standard rerun is required before QA.
+
 ## Verification
 
 Fresh verification before commit is recorded in the task handoff. In the local environment the
