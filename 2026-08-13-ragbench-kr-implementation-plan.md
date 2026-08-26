@@ -228,7 +228,7 @@ class ExperimentRunner:
 - [x] **Step 3: Implement models.** Use UUID primary keys; UTC timestamps; JSONB for immutable configuration snapshots; `Numeric(12,6)` for USD; pgvector column whose dimension comes from a recorded embedding snapshot; foreign keys with restrictive deletes for experiment evidence.
 - [x] **Step 4: Add indexes** on document hash, `(parse_run_id, strategy, ordinal)`, question split/type, experiment status, usage correlation ID, and vector HNSW after vectors are populated.
 - [x] **Step 5: Generate and inspect migration.** Ensure downgrade removes only objects created by this migration.
-- [ ] **Step 6: Run** `alembic upgrade head`, integration test, then `alembic downgrade base && alembic upgrade head`.
+- [x] **Step 6: Run** `alembic upgrade head`, integration test, then `alembic downgrade base && alembic upgrade head`. Reverified on the isolated `ragbench_test` database on 2026-08-26; all six schema integration tests passed and the round trip returned to `20260814_0004 (head)`.
 - [x] **Step 7: Commit** `feat: add experiment persistence schema`.
 
 ### Task 3: Deterministic IDs, Cache, Pricing, Budget Guard, and Retry Policy
@@ -315,7 +315,7 @@ class ExperimentRunner:
 - [ ] **Step 4: Implement index snapshots.** A snapshot records corpus, parse, chunk strategy, embedding model ID, dimension, normalization settings, created time, and complete/incomplete state. Retrieval refuses incomplete snapshots.
 - [ ] **Step 5: Build required embeddings before 2026-08-23 UTC.** Run dry-run/cache audit first; prioritize all 14 core chunk datasets over stretch variants.
 - [ ] **Step 6: Implement pgvector cosine retrieval** with document/parse/strategy filters.
-- [ ] **Step 7: Run parity test** on at least 50 queries; NumPy and pgvector must return identical ordered chunk IDs within tie policy and score tolerance `1e-5`.
+- [x] **Step 7: Run parity test** on at least 50 queries; NumPy and pgvector must return identical ordered chunk IDs within tie policy and score tolerance `1e-5`. Reverified against the isolated PostgreSQL/pgvector database on 2026-08-26.
 - [ ] **Step 8: Commit** `feat: add versioned dense retrieval index`.
 
 ### Task 9: BM25 and RRF Hybrid Retrieval
