@@ -393,11 +393,11 @@ async def test_parse_splits_over_100_pages_and_merges_global_page_evidence() -> 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_enhanced_parse_splits_over_20_pages() -> None:
+async def test_enhanced_parse_splits_over_10_pages() -> None:
     """Catch sending a slow Enhanced request as one large synchronous operation."""
     writer = PdfWriter()
-    for _ in range(21):
-        writer.add_blank_page(width=72, height=72)
+    for index in range(21):
+        writer.add_blank_page(width=72 + index, height=72)
     source = BytesIO()
     writer.write(source)
     responses = [
@@ -410,7 +410,7 @@ async def test_enhanced_parse_splits_over_20_pages() -> None:
                 "usage": {"pages": pages},
             },
         )
-        for value, pages in (("first", 20), ("second", 1))
+        for value, pages in (("first", 10), ("second", 10), ("third", 1))
     ]
     route = respx.post(f"{BASE_URL}/document-digitization").mock(side_effect=responses)
     repository = MemoryBudgetRepository()
@@ -433,8 +433,8 @@ async def test_enhanced_parse_splits_over_20_pages() -> None:
         start = body.index(b"%PDF")
         end = body.index(b"%%EOF", start) + len(b"%%EOF")
         sent_page_counts.append(len(PdfReader(BytesIO(body[start:end])).pages))
-    assert sent_page_counts == [20, 1]
-    assert [record.usage.billable_pages for record in repository.usages] == [20, 1]
+    assert sent_page_counts == [10, 10, 1]
+    assert [record.usage.billable_pages for record in repository.usages] == [10, 10, 1]
 
 
 @pytest.mark.parametrize(

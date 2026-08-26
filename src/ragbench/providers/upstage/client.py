@@ -41,7 +41,7 @@ from ragbench.providers.upstage.pricing import PriceBook, PricingRequest
 LOGGER = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = "provider-cache-v2"
 MAX_SYNC_PARSE_PAGES = 100
-MAX_ENHANCED_SYNC_PARSE_PAGES = 20
+MAX_ENHANCED_SYNC_PARSE_PAGES = 10
 
 
 class ProviderHTTPError(RuntimeError):
