@@ -63,7 +63,19 @@ open.
 On 2026-08-24 the local parse checkpoints were deleted when integration tests reset the same
 database used for runtime evidence. No file cache or backup exists. Runtime and integration test
 databases are now separated and destructive integration resets refuse the configured runtime
-database. Standard must be reconstructed with a separately approved rerun before manual QA.
+database.
+
+The operator approved reconstruction under a USD 21.791 gross cap on 2026-08-26. The rerun restored
+all 20 documents and 1,981 pages with 31 provider calls, no failures, no open reservations, and no
+page-range or duplicate-element defects. A repeat dry run reported 20 cache hits and zero new calls.
+The database was immediately backed up to the ignored local path
+`.ragbench/backups/ragbench-standard-2026-08-26.dump` (SHA-256
+`d7d621a5446dbb93001f2f006c6cba62f62cfd62abb60826c5801bf786a1b2cd`).
+
+Standard-only manual QA covered 30 stratified pages. It conditionally passed for RAG use: ordinary
+prose and most tables retained useful content, while chart series, units, and some digits were not
+reliable enough to ground numeric answers. See `docs/reports/standard-parse-qa.md`. This does not
+satisfy the planned blinded Standard-versus-Enhanced paired QA.
 
 The public synthetic offline fixtures remain reproducible:
 
@@ -74,7 +86,7 @@ These are framework smoke results only, not real-corpus benchmark scores.
 
 ## Remaining external gates
 
-- Standard checkpoint reconstruction, Enhanced parsing, and paired manual parse QA
+- Enhanced parsing and blinded paired manual parse QA
 - Provider-backed document/query embeddings
 - Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts
 - Authorized reviewer work for candidate/gold sealing

@@ -5,10 +5,11 @@ retrieval-augmented generation. It is an experiment platform, not a general-purp
 
 ## Key Results
 
-**No benchmark result is published yet.** The software framework, no-cost public fixture, and
-frozen corpus are implemented. Standard parsing completed once, but its local checkpoints require
-reconstruction before QA. Enhanced parsing, embedding, benchmark human validation, and sealed-gold
-execution remain pending.
+**No benchmark result is published yet.** The software framework, no-cost public fixture, frozen
+corpus, and reconstructed Standard parse snapshot are implemented. A 30-page Standard-only QA
+found prose and most tables usable for RAG, but chart extraction unsafe for numeric evidence.
+Enhanced parsing, paired QA, embedding, benchmark human validation, and sealed-gold execution
+remain pending.
 Consequently, this repository does not claim that one parser, chunker, retriever, prompt, or Solar
 model is better than another.
 
