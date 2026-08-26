@@ -129,6 +129,8 @@ command line; load it through the private environment.
 ### 3. Build deterministic chunks and embeddings
 
 ```bash
+uv run python scripts/export_parse_checkpoints.py <PRIVATE_CHECKPOINT_JSONL> \
+  --snapshot-id <CORPUS_SHA256>
 uv run python scripts/build_chunks.py <COMPLETE_PARSE_CHECKPOINT_JSONL> <PRIVATE_CHUNK_OUTPUT>
 uv run python scripts/build_embeddings.py \
   <IMMUTABLE_CHUNK_DATASET> \
