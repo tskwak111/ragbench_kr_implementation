@@ -42,6 +42,7 @@ LOGGER = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = "provider-cache-v2"
 MAX_SYNC_PARSE_PAGES = 100
 MAX_ENHANCED_SYNC_PARSE_PAGES = 10
+PARSE_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0)
 
 
 class ProviderHTTPError(RuntimeError):
@@ -499,6 +500,8 @@ class UpstageGateway(ProviderGateway):
                             "application/octet-stream",
                         )
                     },
+                    timeout=PARSE_TIMEOUT,
+                    max_retries=0,
                 )
             except BaseException:
                 await self._budget_guard.release(reservation.id)
@@ -621,19 +624,24 @@ class UpstageGateway(ProviderGateway):
         json_payload: dict[str, Any] | None = None,
         data: dict[str, str] | None = None,
         files: dict[str, tuple[str, bytes, str]] | None = None,
+        timeout: httpx.Timeout | None = None,
+        max_retries: int | None = None,
     ) -> httpx.Response:
-        for attempt in range(self.max_retries + 1):
+        retry_limit = self.max_retries if max_retries is None else max_retries
+        request_kwargs: dict[str, Any] = {
+            "json": json_payload,
+            "data": data,
+            "files": files,
+            "headers": {"X-Correlation-ID": str(correlation_id)},
+        }
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
+        for attempt in range(retry_limit + 1):
             try:
                 async with self._semaphore:
-                    response = await self._client.post(
-                        path,
-                        json=json_payload,
-                        data=data,
-                        files=files,
-                        headers={"X-Correlation-ID": str(correlation_id)},
-                    )
+                    response = await self._client.post(path, **request_kwargs)
             except httpx.RequestError:
-                if attempt >= self.max_retries:
+                if attempt >= retry_limit:
                     raise
                 await self._sleep(self._backoff(attempt, None))
                 continue
@@ -641,7 +649,7 @@ class UpstageGateway(ProviderGateway):
                 return response
             if response.status_code != 429 and response.status_code < 500:
                 raise ProviderHTTPError(response.status_code)
-            if attempt >= self.max_retries:
+            if attempt >= retry_limit:
                 raise ProviderHTTPError(response.status_code)
             await self._sleep(self._backoff(attempt, response.headers.get("Retry-After")))
             LOGGER.warning(

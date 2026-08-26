@@ -326,6 +326,30 @@ async def test_parse_uses_official_document_digitization_multipart_contract() ->
     assert 'name="base64_encoding"' in body and "['table']" in body
     assert 'name="output_formats"' in body
     assert "html" in body and "markdown" in body
+    assert sent.extensions["timeout"]["read"] == 300.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_parse_timeout_is_not_retried() -> None:
+    route = respx.post(f"{BASE_URL}/document-digitization").mock(
+        side_effect=httpx.ReadTimeout("slow parse")
+    )
+    gateway = _gateway(max_retries=3)
+
+    with pytest.raises(httpx.ReadTimeout):
+        await gateway.parse(
+            ParseRequest(
+                model_id="document-parse",
+                document_sha256="7" * 64,
+                content=b"%PDF-slow",
+                billable_pages=1,
+                mode="enhanced",
+            )
+        )
+    await gateway.aclose()
+
+    assert route.call_count == 1
 
 
 @pytest.mark.asyncio
