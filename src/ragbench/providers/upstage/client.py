@@ -41,6 +41,7 @@ from ragbench.providers.upstage.pricing import PriceBook, PricingRequest
 LOGGER = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = "provider-cache-v2"
 MAX_SYNC_PARSE_PAGES = 100
+MAX_ENHANCED_SYNC_PARSE_PAGES = 20
 
 
 class ProviderHTTPError(RuntimeError):
@@ -455,8 +456,9 @@ class UpstageGateway(ProviderGateway):
             )
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
-        if request.billable_pages > MAX_SYNC_PARSE_PAGES:
-            return await self._parse_large_document(request)
+        max_pages = _max_sync_parse_pages(request.mode)
+        if request.billable_pages > max_pages:
+            return await self._parse_large_document(request, max_pages)
         _reject_reserved_params(
             request.provider_params,
             {"model", "document", "mode", "output_formats"},
@@ -531,9 +533,9 @@ class UpstageGateway(ProviderGateway):
             await self._store.put(key, operation="parse", model_id=request.model_id, response=raw)
             return ParsedDocument(result.raw_response, str(correlation_id))
 
-    async def _parse_large_document(self, request: ParseRequest) -> ParsedDocument:
+    async def _parse_large_document(self, request: ParseRequest, max_pages: int) -> ParsedDocument:
         responses: list[tuple[int, int, ParsedDocument]] = []
-        for start_page, page_count, content in _pdf_chunks(request):
+        for start_page, page_count, content in _pdf_chunks(request, max_pages):
             response = await self.parse(
                 ParseRequest(
                     model_id=request.model_id,
@@ -720,14 +722,18 @@ class UpstageGateway(ProviderGateway):
             await self._client.aclose()
 
 
-def _pdf_chunks(request: ParseRequest) -> list[tuple[int, int, bytes]]:
+def _max_sync_parse_pages(mode: str) -> int:
+    return MAX_ENHANCED_SYNC_PARSE_PAGES if mode == "enhanced" else MAX_SYNC_PARSE_PAGES
+
+
+def _pdf_chunks(request: ParseRequest, max_pages: int) -> list[tuple[int, int, bytes]]:
     reader = PdfReader(BytesIO(request.content))
     if len(reader.pages) != request.billable_pages:
         raise ValueError("PDF page count differs from declared billable pages")
     chunks: list[tuple[int, int, bytes]] = []
-    for start in range(0, request.billable_pages, MAX_SYNC_PARSE_PAGES):
+    for start in range(0, request.billable_pages, max_pages):
         writer = PdfWriter()
-        end = min(start + MAX_SYNC_PARSE_PAGES, request.billable_pages)
+        end = min(start + max_pages, request.billable_pages)
         for page in reader.pages[start:end]:
             writer.add_page(page)
         output = BytesIO()

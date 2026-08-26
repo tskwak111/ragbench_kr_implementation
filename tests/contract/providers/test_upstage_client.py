@@ -391,6 +391,52 @@ async def test_parse_splits_over_100_pages_and_merges_global_page_evidence() -> 
     assert "id='2'" in result.raw_response["content"]["html"]
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_enhanced_parse_splits_over_20_pages() -> None:
+    """Catch sending a slow Enhanced request as one large synchronous operation."""
+    writer = PdfWriter()
+    for _ in range(21):
+        writer.add_blank_page(width=72, height=72)
+    source = BytesIO()
+    writer.write(source)
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "model": "document-parse-260630",
+                "content": {"markdown": value, "html": value},
+                "elements": [],
+                "usage": {"pages": pages},
+            },
+        )
+        for value, pages in (("first", 20), ("second", 1))
+    ]
+    route = respx.post(f"{BASE_URL}/document-digitization").mock(side_effect=responses)
+    repository = MemoryBudgetRepository()
+    gateway = _gateway(repository=repository)
+
+    await gateway.parse(
+        ParseRequest(
+            model_id="document-parse",
+            document_sha256="8" * 64,
+            content=source.getvalue(),
+            billable_pages=21,
+            mode="enhanced",
+        )
+    )
+    await gateway.aclose()
+
+    sent_page_counts = []
+    for call in route.calls:
+        body = call.request.content
+        start = body.index(b"%PDF")
+        end = body.index(b"%%EOF", start) + len(b"%%EOF")
+        sent_page_counts.append(len(PdfReader(BytesIO(body[start:end])).pages))
+    assert sent_page_counts == [20, 1]
+    assert [record.usage.billable_pages for record in repository.usages] == [20, 1]
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_cost"),
     [("standard", Decimal("0.011000")), ("enhanced", Decimal("0.033000"))],
