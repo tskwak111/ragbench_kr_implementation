@@ -18,7 +18,7 @@ from ragbench.core.config import Settings
 from ragbench.core.money import BudgetGuard, SqlAlchemyBudgetRepository
 from ragbench.db.models import ApiUsage
 from ragbench.db.session import create_lock_session_factory, create_session_factory
-from ragbench.ingestion.manifest import CorpusManifest
+from ragbench.ingestion.manifest import CorpusManifest, DocumentRecord
 from ragbench.ingestion.parser import (
     CorpusSnapshot,
     ParseAuthorization,
@@ -46,10 +46,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("standard", "enhanced"), required=True)
     parser.add_argument("--model-version", required=True)
     parser.add_argument("--vat-buffer", type=Decimal, default=Decimal("0.10"))
+    parser.add_argument("--document-id", action="append", dest="document_ids")
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-plan")
     return parser.parse_args()
+
+
+def _select_documents(
+    documents: tuple[DocumentRecord, ...], selected: list[str] | None
+) -> tuple[DocumentRecord, ...]:
+    if selected is None:
+        return documents
+    if not selected:
+        raise ValueError("at least one --document-id is required")
+    if len(selected) != len(set(selected)):
+        raise ValueError("duplicate --document-id")
+    known = {document.document_id for document in documents}
+    unknown = sorted(set(selected) - known)
+    if unknown:
+        raise ValueError(f"unknown --document-id: {', '.join(unknown)}")
+    wanted = set(selected)
+    return tuple(document for document in documents if document.document_id in wanted)
 
 
 async def _settled_cost(factory: Any) -> Decimal:
@@ -65,7 +83,9 @@ async def _run(args: argparse.Namespace) -> int:
     validation = manifest.validate()
     if validation.corpus_snapshot_id != args.snapshot_id:
         raise RuntimeError("--snapshot-id does not match the manifest content")
-    snapshot = CorpusSnapshot(args.snapshot_id, manifest.documents)
+    snapshot = CorpusSnapshot(
+        args.snapshot_id, _select_documents(manifest.documents, args.document_ids)
+    )
     price_book = PriceBook.from_yaml(PROJECT_ROOT / "configs" / "prices.yaml")
     billing_cost_multiplier = Decimal("1") + args.vat_buffer
     session_factory = create_session_factory(settings)
