@@ -1,6 +1,7 @@
 """Offline HTTP contracts for the guarded Upstage gateway."""
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from email.utils import format_datetime
@@ -22,6 +23,7 @@ from ragbench.providers.upstage.client import (
     ProviderHTTPError,
     ProviderStore,
     UpstageGateway,
+    _pdf_chunks,
 )
 from ragbench.providers.upstage.pricing import PriceBook
 
@@ -394,37 +396,46 @@ async def test_parse_splits_over_100_pages_and_merges_global_page_evidence() -> 
 @pytest.mark.asyncio
 @respx.mock
 async def test_enhanced_parse_splits_over_10_pages() -> None:
-    """Catch sending a slow Enhanced request as one large synchronous operation."""
+    """Reuse successful 10-page chunks and send uncached Enhanced pages singly."""
     writer = PdfWriter()
     for index in range(21):
         writer.add_blank_page(width=72 + index, height=72)
     source = BytesIO()
     writer.write(source)
+    request = ParseRequest(
+        model_id="document-parse",
+        document_sha256="8" * 64,
+        content=source.getvalue(),
+        billable_pages=21,
+        mode="enhanced",
+    )
+    _, first_pages, first_content = _pdf_chunks(request, 10)[0]
     responses = [
         httpx.Response(
             200,
             json={
                 "model": "document-parse-260630",
-                "content": {"markdown": value, "html": value},
+                "content": {"markdown": "parsed", "html": "parsed"},
                 "elements": [],
                 "usage": {"pages": pages},
             },
         )
-        for value, pages in (("first", 10), ("second", 10), ("third", 1))
+        for pages in (10, *([1] * 11))
     ]
     route = respx.post(f"{BASE_URL}/document-digitization").mock(side_effect=responses)
     repository = MemoryBudgetRepository()
-    gateway = _gateway(repository=repository)
+    gateway = _gateway(repository=repository, store=MemoryProviderStore())
 
     await gateway.parse(
         ParseRequest(
             model_id="document-parse",
-            document_sha256="8" * 64,
-            content=source.getvalue(),
-            billable_pages=21,
+            document_sha256=hashlib.sha256(first_content).hexdigest(),
+            content=first_content,
+            billable_pages=first_pages,
             mode="enhanced",
         )
     )
+    await gateway.parse(request)
     await gateway.aclose()
 
     sent_page_counts = []
@@ -433,8 +444,8 @@ async def test_enhanced_parse_splits_over_10_pages() -> None:
         start = body.index(b"%PDF")
         end = body.index(b"%%EOF", start) + len(b"%%EOF")
         sent_page_counts.append(len(PdfReader(BytesIO(body[start:end])).pages))
-    assert sent_page_counts == [10, 10, 1]
-    assert [record.usage.billable_pages for record in repository.usages] == [10, 10, 1]
+    assert sent_page_counts == [10, *([1] * 11)]
+    assert [record.cache_hit for record in repository.usages[:2]] == [False, True]
 
 
 @pytest.mark.parametrize(

@@ -468,14 +468,7 @@ class UpstageGateway(ProviderGateway):
             "output_formats": "['html', 'markdown']",
             **request.provider_params,
         }
-        key = CacheKeyParts(
-            operation="parse",
-            model_id=request.model_id,
-            provider_params=params,
-            prompt_hash=None,
-            context_hash=None,
-            document_sha256=request.document_sha256,
-        ).digest()
+        key = _parse_cache_key(request)
         projected = self._gross(
             self._price_book.estimate(
                 PricingRequest(
@@ -536,16 +529,33 @@ class UpstageGateway(ProviderGateway):
     async def _parse_large_document(self, request: ParseRequest, max_pages: int) -> ParsedDocument:
         responses: list[tuple[int, int, ParsedDocument]] = []
         for start_page, page_count, content in _pdf_chunks(request, max_pages):
-            response = await self.parse(
-                ParseRequest(
-                    model_id=request.model_id,
-                    document_sha256=hashlib.sha256(content).hexdigest(),
-                    content=content,
-                    billable_pages=page_count,
-                    mode=request.mode,
-                    provider_params=request.provider_params,
-                )
+            chunk_request = ParseRequest(
+                model_id=request.model_id,
+                document_sha256=hashlib.sha256(content).hexdigest(),
+                content=content,
+                billable_pages=page_count,
+                mode=request.mode,
+                provider_params=request.provider_params,
             )
+            if (
+                request.mode == "enhanced"
+                and page_count > 1
+                and await self._store.get(_parse_cache_key(chunk_request)) is None
+            ):
+                for offset, single_pages, single_content in _pdf_chunks(chunk_request, 1):
+                    response = await self.parse(
+                        ParseRequest(
+                            model_id=request.model_id,
+                            document_sha256=hashlib.sha256(single_content).hexdigest(),
+                            content=single_content,
+                            billable_pages=single_pages,
+                            mode=request.mode,
+                            provider_params=request.provider_params,
+                        )
+                    )
+                    responses.append((start_page + offset, single_pages, response))
+                continue
+            response = await self.parse(chunk_request)
             responses.append((start_page, page_count, response))
         raw = _merge_parse_chunks(responses, request.billable_pages)
         correlation_ids = [item.correlation_id for _, _, item in responses if item.correlation_id]
@@ -724,6 +734,21 @@ class UpstageGateway(ProviderGateway):
 
 def _max_sync_parse_pages(mode: str) -> int:
     return MAX_ENHANCED_SYNC_PARSE_PAGES if mode == "enhanced" else MAX_SYNC_PARSE_PAGES
+
+
+def _parse_cache_key(request: ParseRequest) -> str:
+    return CacheKeyParts(
+        operation="parse",
+        model_id=request.model_id,
+        provider_params={
+            "mode": request.mode,
+            "output_formats": "['html', 'markdown']",
+            **request.provider_params,
+        },
+        prompt_hash=None,
+        context_hash=None,
+        document_sha256=request.document_sha256,
+    ).digest()
 
 
 def _pdf_chunks(request: ParseRequest, max_pages: int) -> list[tuple[int, int, bytes]]:
