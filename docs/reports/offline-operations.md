@@ -77,6 +77,18 @@ prose and most tables retained useful content, while chart series, units, and so
 reliable enough to ground numeric answers. See `docs/reports/standard-parse-qa.md`. This does not
 satisfy the planned blinded Standard-versus-Enhanced paired QA.
 
+Enhanced parsing subsequently completed for 3 documents and 185 pages: both climate reports and
+`mobis-sustainability-2024`. The local gross cost is USD 6.105000 with no open reservations. The
+partial database backup is `.ragbench/backups/ragbench-enhanced-partial-185p-2026-08-26.dump`
+(SHA-256 `416dbbfa170a4f4bde70e2ec9d2806cb55b98cd11eac84fb4a7ebe1698f9159d`). Remaining paid requests
+were stopped after repeated provider `401 Unauthorized` responses; failed attempts produced no
+successful API usage rows.
+
+A preliminary, unblinded 30-page paired review found 3 Enhanced wins, 3 Standard wins, 14 ties, and
+10 mixed/unsafe results. Enhanced clearly repaired several chart structures but also added
+unsupported visual descriptions and one digit error. See `docs/reports/enhanced-partial-qa.md`.
+This partial review does not satisfy the identical-corpus or blinded paired-QA gates.
+
 The public synthetic offline fixtures remain reproducible:
 
 - retrieval screening: 2 questions, BM25, Hit/Recall/MRR evidence all `1.0`, provider calls `0`
@@ -86,7 +98,7 @@ These are framework smoke results only, not real-corpus benchmark scores.
 
 ## Remaining external gates
 
-- Enhanced parsing and blinded paired manual parse QA
+- Remaining Enhanced parsing (17 documents/1,796 pages) and blinded corpus-wide paired manual QA
 - Provider-backed document/query embeddings
 - Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts
 - Authorized reviewer work for candidate/gold sealing

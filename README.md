@@ -6,10 +6,10 @@ retrieval-augmented generation. It is an experiment platform, not a general-purp
 ## Key Results
 
 **No benchmark result is published yet.** The software framework, no-cost public fixture, frozen
-corpus, and reconstructed Standard parse snapshot are implemented. A 30-page Standard-only QA
-found prose and most tables usable for RAG, but chart extraction unsafe for numeric evidence.
-Enhanced parsing, paired QA, embedding, benchmark human validation, and sealed-gold execution
-remain pending.
+corpus, and reconstructed Standard parse snapshot are implemented. Enhanced parsing is complete for
+3 documents and 185 pages; a preliminary 30-page paired QA found targeted chart improvements but no
+consistent overall advantage. The identical-corpus Enhanced run, blinded paired QA, embedding,
+benchmark human validation, and sealed-gold execution remain pending.
 Consequently, this repository does not claim that one parser, chunker, retriever, prompt, or Solar
 model is better than another.
 
@@ -160,7 +160,9 @@ content-addressed artifact and creates no duplicate response file.
 
 ## Limitations
 
-- Dual parses, 14 chunk snapshots, embedding indexes, and the synthetic benchmark are pending
+- The full Enhanced parse is pending after repeated provider authorization failures; the partial
+  snapshot covers 3 of 20 documents and 185 of 1,981 pages.
+- Fourteen dual-parse chunk snapshots, embedding indexes, and the synthetic benchmark are pending
   provider execution and downstream review.
 - PostgreSQL/pgvector integration and container startup require Docker; environments without it can
   run only the offline fixture and static/unit gates.

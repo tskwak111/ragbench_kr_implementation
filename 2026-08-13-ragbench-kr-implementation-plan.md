@@ -283,8 +283,8 @@ class ExperimentRunner:
 - [x] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
 - [x] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
 - [x] **Step 4: Run Standard on the frozen corpus.** All 20 documents and 1,981 pages succeeded with `document-parse-260630`; no source was repaired or excluded. Checkpoints lost to a destructive test reset were reconstructed on 2026-08-26 and backed up locally.
-- [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets.
-- [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical. A 30-page Standard-only baseline QA is complete; paired/blinded QA remains blocked on Enhanced.
+- [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets. Partial execution completed for 3 documents/185 pages; 17 documents/1,796 pages remain after repeated provider `401 Unauthorized` responses.
+- [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical. A preliminary unblinded 30-pair review of the partial Enhanced corpus found 3 Enhanced wins, 3 Standard wins, 14 ties, and 10 mixed results; corpus-wide blinded QA remains pending.
 - [ ] **Step 7: Reconcile local page charges with provider console** before proceeding.
 - [ ] **Step 8: Commit** `feat: add resumable dual-mode parsing`.
 
