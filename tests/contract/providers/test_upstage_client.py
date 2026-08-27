@@ -327,6 +327,7 @@ async def test_parse_uses_official_document_digitization_multipart_contract() ->
     assert 'name="output_formats"' in body
     assert "html" in body and "markdown" in body
     assert sent.extensions["timeout"]["read"] == 300.0
+    assert sent.extensions["timeout"]["write"] == 300.0
 
 
 @pytest.mark.asyncio

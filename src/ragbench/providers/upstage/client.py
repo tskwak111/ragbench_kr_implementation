@@ -42,7 +42,7 @@ LOGGER = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = "provider-cache-v2"
 MAX_SYNC_PARSE_PAGES = 100
 MAX_ENHANCED_SYNC_PARSE_PAGES = 10
-PARSE_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0)
+PARSE_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=10.0)
 
 
 class ProviderHTTPError(RuntimeError):

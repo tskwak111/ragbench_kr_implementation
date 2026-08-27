@@ -31,6 +31,7 @@ from ragbench.providers.upstage.client import SqlAlchemyProviderStore, UpstageGa
 from ragbench.providers.upstage.pricing import PriceBook
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_BUDGET_EPSILON = Decimal("0.000001")
 
 
 class _DryRunGateway:
@@ -50,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-plan")
+    parser.add_argument("--max-new-cost-usd", type=Decimal)
     return parser.parse_args()
 
 
@@ -75,6 +77,14 @@ async def _settled_cost(factory: Any) -> Decimal:
         total = func.coalesce(func.sum(ApiUsage.estimated_cost_usd), 0)
         value = await session.scalar(select(total))
     return Decimal(value or 0)
+
+
+def _execution_hard_limit(
+    project_limit: Decimal, settled: Decimal, max_new_cost: Decimal
+) -> Decimal:
+    if max_new_cost <= 0:
+        raise ValueError("--max-new-cost-usd must be positive")
+    return min(project_limit, settled + max_new_cost + _BUDGET_EPSILON)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -124,6 +134,8 @@ async def _run(args: argparse.Namespace) -> int:
             live_enabled=os.environ.get("RUN_LIVE_UPSTAGE_TESTS") == "1",
             api_key_present=bool(settings.upstage_api_key),
         )
+        if args.max_new_cost_usd is None:
+            blockers += ("--max-new-cost-usd is required",)
         if blockers:
             payload["executed"] = False
             payload["blockers"] = blockers
@@ -131,6 +143,7 @@ async def _run(args: argparse.Namespace) -> int:
             return 2
         # Fresh pricing and exact plan confirmation are checked again by parse_corpus.
         assert settings.upstage_api_key is not None
+        assert args.max_new_cost_usd is not None
         store = SqlAlchemyProviderStore(
             session_factory,
             lock_session_factory=lock_factory,
@@ -142,7 +155,9 @@ async def _run(args: argparse.Namespace) -> int:
             price_book=price_book,
             budget_guard=BudgetGuard(
                 SqlAlchemyBudgetRepository(session_factory),
-                hard_limit=settings.max_project_budget_usd,
+                hard_limit=_execution_hard_limit(
+                    settings.max_project_budget_usd, settled, args.max_new_cost_usd
+                ),
             ),
             store=store,
             billing_cost_multiplier=billing_cost_multiplier,
