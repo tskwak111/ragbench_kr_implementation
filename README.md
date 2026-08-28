@@ -160,10 +160,11 @@ content-addressed artifact and creates no duplicate response file.
 
 ## Limitations
 
-- The full Enhanced parse is pending after repeated provider authorization failures; the partial
-  snapshot covers 3 of 20 documents and 185 of 1,981 pages.
-- Fourteen dual-parse chunk snapshots, embedding indexes, and the synthetic benchmark are pending
-  provider execution and downstream review.
+- Standard and Enhanced parsing both cover all 20 documents and 1,981 pages. Corpus-wide blinded
+  paired QA and final provider-console reconciliation are still pending.
+- Fourteen private dual-parse chunk snapshots are complete (125,094 chunks). Oversized serialized
+  tables can split inside an HTML row/tag; this is retained as a measured baseline limitation.
+- Embedding indexes and the synthetic benchmark are pending provider execution and downstream review.
 - PostgreSQL/pgvector integration and container startup require Docker; environments without it can
   run only the offline fixture and static/unit gates.
 - Current provider model IDs and prices must be reverified before every paid batch.

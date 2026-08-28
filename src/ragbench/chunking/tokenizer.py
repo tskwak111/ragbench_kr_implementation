@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
+from bisect import bisect_right
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.metadata import version
@@ -74,16 +76,15 @@ def encoding() -> tiktoken.Encoding:
 
 def _safe_token_boundaries(token_bytes: list[bytes]) -> tuple[list[int], dict[int, int]]:
     offsets = [0]
-    for piece in token_bytes:
-        offsets.append(offsets[-1] + len(piece))
     safe: dict[int, int] = {0: 0}
-    prefix = bytearray()
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    characters = 0
     for index, piece in enumerate(token_bytes, start=1):
-        prefix.extend(piece)
-        try:
-            safe[index] = len(prefix.decode("utf-8"))
-        except UnicodeDecodeError:
-            continue
+        offsets.append(offsets[-1] + len(piece))
+        characters += len(decoder.decode(piece))
+        if not decoder.getstate()[0]:
+            safe[index] = characters
+    decoder.decode(b"", final=True)
     return offsets, safe
 
 
@@ -104,6 +105,7 @@ def safe_token_windows(text: str, size: int, overlap: int) -> tuple[TokenWindow,
     payload = text.encode("utf-8")
     if b"".join(pieces) != payload or len(tokens) not in safe:
         raise ValueError("tokenizer bytes do not reconstruct normalized text")
+    safe_boundaries = tuple(safe)
     windows: list[TokenWindow] = []
     start = 0
     while start < len(tokens):
@@ -111,22 +113,21 @@ def safe_token_windows(text: str, size: int, overlap: int) -> tuple[TokenWindow,
         if nominal == len(tokens):
             end = nominal
         else:
-            end_candidates = [boundary for boundary in safe if boundary > start]
-            before = [boundary for boundary in end_candidates if boundary <= nominal]
-            end = max(before) if before else min(end_candidates)
-            while end < len(tokens):
-                safe_starts = [boundary for boundary in safe if start < boundary <= end - overlap]
-                if safe_starts:
-                    break
-                end = min(boundary for boundary in safe if boundary > end)
+            next_boundary = bisect_right(safe_boundaries, start)
+            end_index = max(next_boundary, bisect_right(safe_boundaries, nominal) - 1)
+            end = safe_boundaries[end_index]
+            while (
+                end < len(tokens) and bisect_right(safe_boundaries, end - overlap) <= next_boundary
+            ):
+                end_index += 1
+                end = safe_boundaries[end_index]
         content_bytes = payload[offsets[start] : offsets[end]]
         content = content_bytes.decode("utf-8")
         windows.append(TokenWindow(content, start, end, safe[start], safe[end]))
         if end == len(tokens):
             break
-        safe_starts = [boundary for boundary in safe if start < boundary <= end - overlap]
-        if not safe_starts:
+        next_start_index = bisect_right(safe_boundaries, end - overlap) - 1
+        if safe_boundaries[next_start_index] <= start:
             raise RuntimeError("safe tokenizer window made no progress")
-        next_start = max(safe_starts)
-        start = next_start
+        start = safe_boundaries[next_start_index]
     return tuple(windows)

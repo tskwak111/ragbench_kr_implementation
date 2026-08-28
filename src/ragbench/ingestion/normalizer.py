@@ -16,6 +16,7 @@ from ragbench.ingestion.parser import ParseCheckpoint
 _SPACE_RUN = re.compile(r"(?<!\n)[ \f\v]{2,}")
 _KINDS: dict[str, BlockKind] = {
     "heading": "heading",
+    **{f"heading{level}": "heading" for level in range(1, 7)},
     "title": "heading",
     "paragraph": "paragraph",
     "text": "paragraph",

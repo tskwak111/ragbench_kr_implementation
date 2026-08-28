@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import sys
@@ -59,6 +60,20 @@ def test_build_exports_all_14_immutable_variants(tmp_path):
         "asset_sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7",
     }
     assert len(metadata["datasets"]) == 14
+
+
+def test_chunk_snapshot_id_changes_when_derived_records_change(tmp_path):
+    checkpoints = [_checkpoint("a", "standard"), _checkpoint("a", "enhanced")]
+    changed = copy.deepcopy(checkpoints)
+    for checkpoint in changed:
+        checkpoint["elements"][0]["category"] = "heading1"
+
+    before = build_chunk_snapshots(checkpoints, tmp_path / "before")
+    after = build_chunk_snapshots(changed, tmp_path / "after")
+
+    assert {item.snapshot_id for item in before.datasets}.isdisjoint(
+        item.snapshot_id for item in after.datasets
+    )
 
 
 @pytest.mark.parametrize(

@@ -117,6 +117,35 @@ def test_markdown_heading_levels_form_stable_section_paths(tmp_path):
     ]
 
 
+def test_provider_numbered_heading_categories_form_section_paths(tmp_path):
+    parsed = _checkpoint(
+        tmp_path,
+        [
+            {
+                "page": 1,
+                "category": "heading1",
+                "content": {"markdown": "# 상위", "text": "상위", "html": "<h1>상위</h1>"},
+            },
+            {"page": 1, "category": "paragraph", "content": "내용"},
+            {
+                "page": 2,
+                "category": "heading2",
+                "content": {"markdown": "## 하위", "text": "하위", "html": "<h2>하위</h2>"},
+            },
+        ],
+        pages=2,
+    )
+
+    blocks = normalize(parsed)
+
+    assert [block.block_kind for block in blocks] == ["heading", "paragraph", "heading"]
+    assert [block.section_path for block in blocks] == [
+        ("상위",),
+        ("상위",),
+        ("상위", "하위"),
+    ]
+
+
 def test_empty_page_uses_preceding_section_even_when_elements_are_unsorted(tmp_path):
     parsed = _checkpoint(
         tmp_path,

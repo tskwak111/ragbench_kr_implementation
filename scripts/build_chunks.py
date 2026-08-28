@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -162,6 +163,10 @@ def build_chunk_snapshots(
                 normalized_input = dict(checkpoint)
                 normalized_input["parse_snapshot_id"] = parse_snapshots[mode]
                 records.extend(chunker.split(normalize(normalized_input)))
+            payload = "".join(
+                json.dumps(asdict(record), ensure_ascii=False, sort_keys=True) + "\n"
+                for record in records
+            )
             snapshot = canonical_json_hash(
                 {
                     "corpus": corpus,
@@ -169,13 +174,10 @@ def build_chunk_snapshots(
                     "mode": mode,
                     "strategy_hash": chunker.strategy_hash,
                     "tokenizer": tokenizer_snapshot(),
+                    "records_sha256": hashlib.sha256(payload.encode()).hexdigest(),
                 }
             )
             path = output_dir / f"{snapshot}.jsonl"
-            payload = "".join(
-                json.dumps(asdict(record), ensure_ascii=False, sort_keys=True) + "\n"
-                for record in records
-            )
             _write_immutable(path, payload)
             artifacts.append(
                 DatasetArtifact(

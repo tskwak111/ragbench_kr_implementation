@@ -283,7 +283,7 @@ class ExperimentRunner:
 - [x] **Step 2: Implement a dry-run planner** that lists documents/pages, cache hits, projected new calls, worst-case price including VAT buffer, and post-run remaining budget. Paid mode requires `--confirm-plan <plan-hash>`.
 - [x] **Step 3: Implement Standard parse execution** with per-document checkpoints and raw response preservation.
 - [x] **Step 4: Run Standard on the frozen corpus.** All 20 documents and 1,981 pages succeeded with `document-parse-260630`; no source was repaired or excluded. Checkpoints lost to a destructive test reset were reconstructed on 2026-08-26 and backed up locally.
-- [ ] **Step 5: Implement and run Enhanced against the identical effective corpus.** Reject mismatched source hashes or page sets. Partial execution completed for 3 documents/185 pages; 17 documents/1,796 pages remain after repeated provider `401 Unauthorized` responses.
+- [x] **Step 5: Implement and run Enhanced against the identical effective corpus.** All 20 documents and 1,981 pages succeeded against the same source hashes/page sets as Standard on 2026-08-28. The complete database backup is retained privately at `.ragbench/backups/ragbench-parsing-complete-20docs-1981p-2026-08-28.dump`.
 - [ ] **Step 6: Perform stratified manual QA** on at least 30 page pairs: complex tables, financial statements, charts, multi-column pages, and ordinary prose. Record transcription/structure/visual-element findings with blinded mode labels where practical. A preliminary unblinded 30-pair review of the partial Enhanced corpus found 3 Enhanced wins, 3 Standard wins, 14 ties, and 10 mixed results; corpus-wide blinded QA remains pending.
 - [ ] **Step 7: Reconcile local page charges with provider console** before proceeding.
 - [ ] **Step 8: Commit** `feat: add resumable dual-mode parsing`.
@@ -299,8 +299,8 @@ class ExperimentRunner:
 - [x] **Step 3: Implement token-aware fixed chunking** for `(300,0)`, `(300,100)`, `(600,0)`, `(600,100)`, `(1000,0)`, `(1000,100)`. Define overlap in tokens and prevent zero-progress loops.
 - [x] **Step 4: Implement heading-aware chunking.** Prefer section boundaries, split oversized sections token-wise, merge undersized neighboring blocks within the same section, and retain page ranges.
 - [x] **Step 5: Add invariants**: deterministic output, no lost non-boilerplate text, monotonic ordinals, valid page ranges, token count within documented tolerance, and unique chunk IDs containing parse snapshot and strategy hash.
-- [ ] **Step 6: Build all 14 core chunk datasets** (2 parse modes × 7 strategies) and export size/coverage distributions.
-- [ ] **Step 7: Manually inspect one text-heavy and one table-heavy document in `01_chunk_inspection.ipynb`; record boundary defects.**
+- [x] **Step 6: Build all 14 core chunk datasets** (2 parse modes × 7 strategies) and export size/coverage distributions. The corrected private v2 snapshot contains 125,094 chunks across 20 documents per dataset; metadata SHA-256 is `93cc8fd651a92b6581455a8e6b416ec4ea659cd235cf8c87f4aeb1f8b0ff15f0`.
+- [x] **Step 7: Manually inspect one text-heavy and one table-heavy document in `01_chunk_inspection.ipynb`; record boundary defects.** LG Electronics page 48 and KT Appendix page 4 were checked against rendered PDFs. Heading boundaries work after recognizing provider `heading1`–`heading6`; oversized serialized tables can still split inside an HTML row/tag and remain a documented baseline limitation.
 - [ ] **Step 8: Commit** `feat: add provenance-preserving chunkers`.
 
 ### Task 8: Embed 2 Indexing, Cosine Reference, and pgvector Parity
@@ -603,8 +603,8 @@ Codex must append one row after every completed task; do not mark a task complet
 | 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
 | 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
 | 5 | `f57966e`..`734a4d9` | Ruff, strict mypy, 108 passed/2 skips, 30 ingestion tests | partial | 0 | n/a | Framework approved; real corpus, licensing/manual inspection, freeze and public manifest pending. |
-| 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | 0 | pending | Framework approved; real dual parse, 95% gate, paired QA and console reconciliation pending. |
-| 7 | `c7c23c4`, `dea3cd3` | Ruff, strict mypy, 164 passed/3 skips, wheel asset audit | partial | 0 | n/a | Framework approved; real 14 datasets and notebook inspection pending parsed corpus. |
+| 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | paid | pending | Standard and Enhanced both cover 20 documents/1,981 pages; corpus-wide blinded paired QA and provider-console reconciliation remain pending. |
+| 7 | `c7c23c4`, `dea3cd3` | 14 immutable datasets, 125,094 chunks, deterministic rebuild, boundary inspection | partial | 0 | n/a | Real datasets and notebook inspection complete; final verification/commit evidence is pending. |
 | 8 | — | — | pending | 0 | pending | — |
 | 9 | — | — | pending | 0 | n/a | — |
 | 10 | — | — | pending | 0 | pending | — |
