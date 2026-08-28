@@ -301,7 +301,7 @@ class ExperimentRunner:
 - [x] **Step 5: Add invariants**: deterministic output, no lost non-boilerplate text, monotonic ordinals, valid page ranges, token count within documented tolerance, and unique chunk IDs containing parse snapshot and strategy hash.
 - [x] **Step 6: Build all 14 core chunk datasets** (2 parse modes × 7 strategies) and export size/coverage distributions. The corrected private v2 snapshot contains 125,094 chunks across 20 documents per dataset; metadata SHA-256 is `93cc8fd651a92b6581455a8e6b416ec4ea659cd235cf8c87f4aeb1f8b0ff15f0`.
 - [x] **Step 7: Manually inspect one text-heavy and one table-heavy document in `01_chunk_inspection.ipynb`; record boundary defects.** LG Electronics page 48 and KT Appendix page 4 were checked against rendered PDFs. Heading boundaries work after recognizing provider `heading1`–`heading6`; oversized serialized tables can still split inside an HTML row/tag and remain a documented baseline limitation.
-- [ ] **Step 8: Commit** `feat: add provenance-preserving chunkers`.
+- [x] **Step 8: Commit** `feat: add provenance-preserving chunkers`. Initial implementation is in `c7c23c4`/`dea3cd3`; real-corpus heading/category, performance, and snapshot-identity fixes are in `aa9575f`.
 
 ### Task 8: Embed 2 Indexing, Cosine Reference, and pgvector Parity
 
@@ -603,8 +603,8 @@ Codex must append one row after every completed task; do not mark a task complet
 | 3 | `0b1b47f`..`5451f07` | Ruff/format, strict mypy, 63 passed/1 DB skip, respx contracts, secret guard | pass | 0 | n/a | Review approved after budget/cache/concurrency hardening; live PostgreSQL remains CI-only. |
 | 4 | `50dcc5e`, `8807497` | Ruff/format, strict mypy, 78 passed/2 skips, offline preflight | partial | 0 | pending | CLI/review complete; approved live smoke and persistent SQL-cache rerun remain pending. |
 | 5 | `f57966e`..`734a4d9` | Ruff, strict mypy, 108 passed/2 skips, 30 ingestion tests | partial | 0 | n/a | Framework approved; real corpus, licensing/manual inspection, freeze and public manifest pending. |
-| 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | paid | pending | Standard and Enhanced both cover 20 documents/1,981 pages; corpus-wide blinded paired QA and provider-console reconciliation remain pending. |
-| 7 | `c7c23c4`, `dea3cd3` | 14 immutable datasets, 125,094 chunks, deterministic rebuild, boundary inspection | partial | 0 | n/a | Real datasets and notebook inspection complete; final verification/commit evidence is pending. |
+| 6 | `4a770af`..`2f81936` | Ruff, strict mypy, 131 passed/3 skips, offline Alembic SQL | partial | 40 successful plus retries | pending | Standard and Enhanced both cover 20 documents/1,981 pages; corpus-wide blinded paired QA and provider-console reconciliation remain pending. |
+| 7 | `c7c23c4`, `dea3cd3`, `aa9575f` | Ruff/format, strict mypy, 473 passed/4 skipped, deterministic 14-dataset rebuild, notebook execution | pass | 0 | n/a | 125,094 private chunks; heading/fixed outputs distinct; oversized-table token splits documented. |
 | 8 | — | — | pending | 0 | pending | — |
 | 9 | — | — | pending | 0 | n/a | — |
 | 10 | — | — | pending | 0 | pending | — |
