@@ -96,11 +96,24 @@ The public synthetic offline fixtures remain reproducible:
 
 These are framework smoke results only, not real-corpus benchmark scores.
 
+## 2026-08-28 completion update
+
+Standard and Enhanced parsing now both cover the identical approved corpus of 20 documents and
+1,981 pages. The 14 corrected dual-parse chunk datasets contain 125,094 chunks. Provider-backed
+Embed 2 indexing is also complete: 14 immutable 4096-dimensional snapshots contain exactly 125,094
+vectors from 57,631,146 input tokens across 1,259 passage-embedding calls. All 14 HNSW indexes are
+ready, local gross embedding cost is USD 1.268529, and there are no open or
+reconciliation-required budget reservations.
+
+Total locally settled provider cost is USD 89.752530 against the USD 135.00 hard limit, leaving USD
+45.247470. The ignored final database backup is
+`.ragbench/backups/ragbench-embeddings-complete-14-snapshots-2026-08-28.dump` (4,858,235,259 bytes;
+SHA-256 `f9aedc2f45c05c7843fec94142f9f7431528625ebbcf828bdd3925649cd6e5ad`).
+
 ## Remaining external gates
 
-- Remaining Enhanced parsing (17 documents/1,796 pages) and blinded corpus-wide paired manual QA
-- Provider-backed document/query embeddings
-- Real-corpus chunking, indexing, screening, generation, judge calibration, and final experiments that depend on provider artifacts
+- Blinded corpus-wide paired manual QA
+- Real-corpus retrieval screening, generation, judge calibration, and final experiments
 - Authorized reviewer work for candidate/gold sealing
 - Any live API deployment or HTTP smoke test
 

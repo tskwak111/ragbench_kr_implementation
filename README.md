@@ -164,7 +164,8 @@ content-addressed artifact and creates no duplicate response file.
   paired QA and final provider-console reconciliation are still pending.
 - Fourteen private dual-parse chunk snapshots are complete (125,094 chunks). Oversized serialized
   tables can split inside an HTML row/tag; this is retained as a measured baseline limitation.
-- Embedding indexes and the synthetic benchmark are pending provider execution and downstream review.
+- All 14 private Embed 2 index snapshots are complete (125,094 vectors at 4096 dimensions), and
+  every snapshot has a ready HNSW index. Real-corpus screening and downstream benchmark review remain.
 - PostgreSQL/pgvector integration and container startup require Docker; environments without it can
   run only the offline fixture and static/unit gates.
 - Current provider model IDs and prices must be reverified before every paid batch.

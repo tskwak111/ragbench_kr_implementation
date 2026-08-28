@@ -309,14 +309,14 @@ class ExperimentRunner:
 
 **Interfaces:** Produces `EmbeddingService.embed_chunks(snapshot)`, `cosine_top_k(query, matrix, k)`, and `DenseRetriever.search(...)`.
 
-- [ ] **Step 1: Write cosine tests** with hand-calculated vectors, zero-vector rejection, tie-breaking by stable chunk ID, and Top-K bounds.
-- [ ] **Step 2: Implement NumPy reference cosine search** and explain dot product, norms, normalization, sorting, and Top-K in the notebook.
-- [ ] **Step 3: Write embedding service tests** for batching, request-size limits, caching, resume, model/dimension mismatch, and separate query/document input modes if the provider supports them.
-- [ ] **Step 4: Implement index snapshots.** A snapshot records corpus, parse, chunk strategy, embedding model ID, dimension, normalization settings, created time, and complete/incomplete state. Retrieval refuses incomplete snapshots.
-- [ ] **Step 5: Build required embeddings before 2026-08-23 UTC.** Run dry-run/cache audit first; prioritize all 14 core chunk datasets over stretch variants.
-- [ ] **Step 6: Implement pgvector cosine retrieval** with document/parse/strategy filters.
+- [x] **Step 1: Write cosine tests** with hand-calculated vectors, zero-vector rejection, tie-breaking by stable chunk ID, and Top-K bounds.
+- [x] **Step 2: Implement NumPy reference cosine search** and explain dot product, norms, normalization, sorting, and Top-K in the notebook.
+- [x] **Step 3: Write embedding service tests** for batching, request-size limits, caching, resume, model/dimension mismatch, and separate query/document input modes if the provider supports them.
+- [x] **Step 4: Implement index snapshots.** A snapshot records corpus, parse, chunk strategy, embedding model ID, dimension, normalization settings, created time, and complete/incomplete state. Retrieval refuses incomplete snapshots.
+- [x] **Step 5: Build required embeddings.** The planned 2026-08-23 UTC deadline was missed; all 14 core datasets completed on 2026-08-28 after dry-run/cache audit. The immutable 4096-dimensional snapshots contain 125,094 vectors from 57,631,146 tokens across 1,259 paid passage-embedding calls, with local gross cost USD 1.268529, all 14 HNSW indexes ready, and no open or reconciliation-required reservations.
+- [x] **Step 6: Implement pgvector cosine retrieval** with document/parse/strategy filters.
 - [x] **Step 7: Run parity test** on at least 50 queries; NumPy and pgvector must return identical ordered chunk IDs within tie policy and score tolerance `1e-5`. Reverified against the isolated PostgreSQL/pgvector database on 2026-08-26.
-- [ ] **Step 8: Commit** `feat: add versioned dense retrieval index`.
+- [x] **Step 8: Commit** `feat: add versioned dense retrieval index` (`54e0a65`, hardened in `af348b2`).
 
 ### Task 9: BM25 and RRF Hybrid Retrieval
 
